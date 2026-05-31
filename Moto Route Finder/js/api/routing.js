@@ -46,7 +46,11 @@ export const Routing = {
   async _routeValhalla(sLat, sLng, wps) {
     const allPts = [{ lat: sLat, lng: sLng }, ...wps, { lat: sLat, lng: sLng }];
     const body = {
-      locations: allPts.map(p => ({ lon: p.lng, lat: p.lat })),
+      locations: allPts.map((p, i) => ({
+        lon: p.lng,
+        lat: p.lat,
+        type: (i === 0 || i === allPts.length - 1) ? 'break' : 'through'
+      })),
       costing: 'motorcycle',
       costing_options: {
         motorcycle: {
@@ -104,25 +108,31 @@ export const Routing = {
    * @private
    */
   async _routeOSRM(sLat, sLng, wps) {
-    const all = [{ lat: sLat, lng: sLng }, ...wps, { lat: sLat, lng: sLng }];
+    if (!wps.length) return null;
+
+    const all = [{ lat: sLat, lng: sLng }, ...wps];
     const coords = all.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
     const exclude = State.get('avoidMotorways') ? '&exclude=motorway' : '';
 
     const response = await fetch(
-      `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson${exclude}`,
+      `https://router.project-osrm.org/trip/v1/driving/${coords}?overview=full&geometries=geojson&source=first&destination=last&roundtrip=true${exclude}`,
       { signal: AbortSignal.timeout(CONSTANTS.ROUTING_TIMEOUT_MS) }
     );
 
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
 
-    if (data.code !== 'Ok' || !data.routes.length) return null;
+    if (data.code !== 'Ok' || !data.trips?.length) return null;
 
-    const route = data.routes[0];
+    const trip = data.trips[0];
+    const snappedWps = data.waypoints
+      .filter(w => w.waypoint_index !== 0)
+      .map(w => ({ lat: w.location[1], lng: w.location[0] }));
+
     return {
-      wps: data.waypoints.slice(1, -1).map(w => ({ lat: w.location[1], lng: w.location[0] })),
-      geometry: route.geometry.coordinates.map(c => [c[1], c[0]]),
-      distance: route.distance / 1000
+      wps: snappedWps,
+      geometry: trip.geometry.coordinates.map(c => [c[1], c[0]]),
+      distance: trip.distance / 1000
     };
   },
 
