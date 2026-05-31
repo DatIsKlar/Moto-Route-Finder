@@ -1,0 +1,69 @@
+// Named constants for all magic numbers in the application
+export const CONSTANTS = {
+  // Route generation
+  ROAD_DETOUR_FACTOR: 1.35, // Empirical road-to-straight-line ratio
+  MIN_WAYPOINTS: 2,
+  MAX_WAYPOINTS: 15,
+  MIN_SPEED: 30,
+  MAX_SPEED: 90,
+
+  // Waypoint generation
+  JITTER_FACTOR: 0.30,
+  RADIUS_VARIATION_MIN: 0.75,
+  RADIUS_VARIATION_MAX: 1.25,
+  MIN_ANGULAR_SEPARATION: 0.4,
+
+  // Optimizer
+  GRID_SIZE: 0.0005,
+  MIN_SEGMENT_LENGTH: 0.00006,
+  MAX_OPTIMIZATION_ITERATIONS: 15,
+  NO_IMPROVEMENT_LIMIT: 5,
+  MAX_PATHS_PER_ITERATION: 5,
+  MAX_CANDIDATES_PER_PATH: 6,
+  STEM_BEARING_TOLERANCE: 30,
+  PERMUTATION_THRESHOLD: 7,
+
+  // Correction offsets (km)
+  CORRECTION_OFFSETS: [1.0, 2.0, 4.0],
+  RADIAL_OFFSETS: [2.0, 4.0, 7.0],
+  DISTANCE_REJECTION_FACTOR: 2.0,
+
+  // Wide-radius relocation
+  RELOCATION_RADII_KM: [0.5, 1.0, 2.0, 3.0],
+  RELOCATION_DIRECTIONS: 8,
+
+  // Stem detection thresholds
+  NEAR_START_THRESHOLD: 0.15,
+  NEAR_END_THRESHOLD: 0.85,
+  STEM_GROUP_GAP: 4,
+
+  // Waypoint spacing
+  MIN_WAYPOINT_SPACING_KM: 3,
+
+  // Score weights
+  REPEATED_PATH_WEIGHT: 100,
+  REP_RATIO_WEIGHT: 200,
+
+  // API
+  NOMINATIM_RATE_LIMIT_MS: 1100, // Nominatim TOS: 1 req/sec
+  ROUTING_TIMEOUT_MS: 15000,
+  SNAP_TIMEOUT_MS: 8000,
+  DEBOUNCE_DELAY_MS: 380,
+
+  // UI
+  TOAST_DURATION_MS: 2400,
+  MAX_GOOGLE_MAPS_WAYPOINTS: 9,
+  MAX_KURVIGER_WAYPOINTS: 25,
+
+  // Map
+  DEFAULT_ZOOM: 6,
+  LOCATION_ZOOM: 11,
+  FIT_BOUNDS_PADDING: 40,
+
+  // Route colors
+  COLORS: ['#dc2626', '#2563eb', '#d97706', '#16a34a', '#7c3aed'],
+  RGBS: ['220,38,38', '37,99,235', '217,119,6', '22,163,74', '124,58,237'],
+
+  // Compass directions
+  COMPASS_DIRECTIONS: ['NORTH', 'NE', 'EAST', 'SE', 'SOUTH', 'SW', 'WEST', 'NW']
+};

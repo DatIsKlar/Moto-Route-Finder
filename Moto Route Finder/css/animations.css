@@ -1,0 +1,10 @@
+.toast{
+  position:fixed;bottom:16px;right:16px;background:white;
+  border:1.5px solid var(--success);color:var(--success);
+  padding:10px 15px;border-radius:10px;font-size:13px;font-weight:500;
+  z-index:9999;animation:tIn .2s ease;box-shadow:0 4px 12px rgba(0,0,0,.12);
+}
+@keyframes tIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes cardIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{animation:spin .7s linear infinite;flex-shrink:0}
