@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Moto Route Finder</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+    <header class="header">
+        <div class="header-left">
+            <span class="logo">&#x1F3CD;</span>
+            <h1>Moto Route Finder</h1>
+        </div>
+        <div class="header-buttons">
+            <button id="btnLoadMap" class="btn btn-blue">Load Map(s)</button>
+            <button id="btnBrowse" class="btn btn-blue">Browse Server</button>
+            <button id="btnClearRoute" class="btn btn-default" disabled>Clear Route</button>
+            <button id="btnClearAll" class="btn btn-red">Clear All</button>
+        </div>
+        <input type="file" id="fileInput" accept=".osm,.pbf,.routerdb" multiple style="display:none" />
+    </header>
+
+    <div class="modal-overlay" id="browseModal" style="display:none">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="section-header" style="margin-bottom:0">Browse Server Files</span>
+                <button class="btn btn-small btn-red" id="btnCloseBrowse">X</button>
+            </div>
+            <div class="modal-path" id="browseCurrentPath">/</div>
+            <div class="modal-list" id="browseList"></div>
+            <div class="modal-footer">
+                <button class="btn btn-blue" id="btnLoadSelected" disabled>Load Selected</button>
+                <button class="btn btn-default" id="btnCancelBrowse">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="content">
+        <div class="map-area">
+            <div id="map"></div>
+        </div>
+
+        <div class="sidebar" id="sidebar">
+            <div class="status-bar" id="statusBar">Click on the map to set start point</div>
+
+            <div class="section" id="savedMapsSection">
+                <div class="section-header">Saved Maps</div>
+                <div id="savedMapsList"></div>
+            </div>
+
+            <div class="section" id="loadedMapsSection" style="display:none">
+                <div class="section-header">Loaded Maps</div>
+                <div id="loadedMapsList"></div>
+            </div>
+
+            <div class="section">
+                <div class="section-header-row">
+                    <span class="section-header">Selected Points</span>
+                    <button id="btnRemoveLast" class="btn btn-small btn-red">Remove Last</button>
+                </div>
+                <div id="pointsList"></div>
+                <div class="hint">Click map to add points</div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">Route Settings</div>
+                <div class="setting-row">
+                    <label>Target Distance (km)</label>
+                    <input type="number" id="targetDistance" value="50" min="0" max="200" step="5">
+                </div>
+                <div class="setting-row" id="durationRow">
+                    <label>Target Duration (min)</label>
+                    <input type="number" id="targetDuration" value="0" min="0" max="480" step="15">
+                </div>
+                <div class="setting-row">
+                    <label>Waypoint Count</label>
+                    <input type="number" id="waypointCount" value="6" min="3" max="15" step="1">
+                </div>
+                <div class="setting-row">
+                    <label>Avoid Highways</label>
+                    <input type="checkbox" id="avoidHighways" checked>
+                </div>
+                <div class="setting-row" id="directionRow">
+                    <label>Direction Bias</label>
+                    <select id="directionBias">
+                        <option value="Any">Any Direction</option>
+                        <option value="North">North</option>
+                        <option value="South">South</option>
+                        <option value="East">East</option>
+                        <option value="West">West</option>
+                        <option value="Northeast">Northeast</option>
+                        <option value="Southeast">Southeast</option>
+                        <option value="Southwest">Southwest</option>
+                        <option value="Northwest">Northwest</option>
+                    </select>
+                </div>
+                <div class="setting-row">
+                    <label>Candidates Per Route</label>
+                    <input type="number" id="candidatesPerRoute" value="4" min="1" max="8" step="1">
+                </div>
+            </div>
+
+            <div class="mode-toggle">
+                <button class="mode-btn active" data-mode="generate">Generate</button>
+                <button class="mode-btn" data-mode="test">Test</button>
+            </div>
+
+            <div class="section" id="generateSection">
+                <button id="btnGenerate" class="btn btn-accent btn-large" disabled>Generate Route</button>
+                <button id="btnCancel" class="btn btn-red btn-large" style="display:none">Cancel</button>
+            </div>
+
+            <div class="section" id="testSection" style="display:none">
+                <div class="setting-row">
+                    <label>Random Waypoint Count</label>
+                    <input type="checkbox" id="randomWaypointCount">
+                </div>
+                <div class="setting-row">
+                    <label>Test Route Count</label>
+                    <input type="number" id="testRouteCount" value="5" min="1" max="100" step="1">
+                </div>
+                <div class="file-count-label" id="testFileCountLabel">5 routes x 4 candidates = 20 diagnostics files</div>
+                <button id="btnRunTest" class="btn btn-amber btn-large" disabled>Run Test</button>
+                <div class="test-progress" id="testProgress" style="display:none"></div>
+                <button id="btnCancelTest" class="btn btn-red btn-large" style="display:none">Cancel Test</button>
+            </div>
+
+            <div class="section" id="exportSection" style="display:none">
+                <button id="btnGoogleMaps" class="btn btn-blue btn-full">Open in Google Maps</button>
+                <button id="btnDownloadGpx" class="btn btn-green btn-full">Download GPX File</button>
+            </div>
+
+            <div class="section" id="statsSection" style="display:none">
+                <div class="section-header">Route Info</div>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" id="statDistance">--</div>
+                        <div class="stat-label">kilometers</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="statDuration">--</div>
+                        <div class="stat-label">minutes</div>
+                    </div>
+                </div>
+                <div class="repetition-bar">
+                    <div class="repetition-label">Road Repetition</div>
+                    <div class="repetition-value" id="statRepetition">--</div>
+                </div>
+                <div class="setting-row">
+                    <label>Show Repetitions on Map</label>
+                    <input type="checkbox" id="showRepetitions">
+                </div>
+                <div id="roadTypesSection" style="display:none">
+                    <div class="road-types-header">Road Types</div>
+                    <div id="roadTypesList"></div>
+                </div>
+            </div>
+
+            <div class="section" id="alternativesSection" style="display:none">
+                <div class="section-header">Alternative Candidates</div>
+                <div class="hint">Click to switch route</div>
+                <div id="alternativesList"></div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <div class="legend">
+            <span class="legend-item"><span class="legend-color" style="background:#3b82f6"></span>Outgoing</span>
+            <span class="legend-item"><span class="legend-color" style="background:#22c55e"></span>Return</span>
+            <span class="legend-item"><span class="legend-color" style="background:#a855f7"></span>Full Loop</span>
+        </div>
+    </footer>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="js/map.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
