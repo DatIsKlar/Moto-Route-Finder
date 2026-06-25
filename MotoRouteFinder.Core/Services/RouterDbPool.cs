@@ -113,6 +113,11 @@ public class RouterDbPool : IDisposable
     public void Dispose()
     {
         _disposed = true;
-        while (_pool.TryDequeue(out _)) { }
+        while (_pool.TryDequeue(out var repo))
+        {
+            repo?.ClearMaps();
+        }
+        GC.Collect(2, GCCollectionMode.Forced, true);
+        GC.WaitForPendingFinalizers();
     }
 }

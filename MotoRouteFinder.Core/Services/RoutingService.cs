@@ -26,6 +26,12 @@ public class RoutingService
 
     private const int MaxRouteAttempts = 3;
     private const double MaxRepetitionRatio = 0.05;
+    private const int IdleTimeoutSeconds = 300; // 5 minutes
+
+    private Timer? _idleTimer;
+    private string? _cachedCachePath;
+    private bool _avoidHighwaysCached;
+    private bool _unloading;
 
     public RoutingService()
     {
@@ -37,6 +43,7 @@ public class RoutingService
         _stemFixer = new StemFixer(_mapRepository, _roadClassifier, _routeAssembler, _edgeBlocker);
         _routeStatistics = new RouteStatistics(_roadClassifier);
         _routeBuilder = new RouteBuilder(_mapRepository, _roadClassifier, _routeAssembler, _waypointGenerator, _stemFixer, _routeStatistics, _diagnostics, _edgeBlocker);
+        _idleTimer = new Timer(UnloadMapIdle, null, Timeout.Infinite, Timeout.Infinite);
     }
 
     /// <summary>
@@ -63,22 +70,73 @@ public class RoutingService
     public event Action<string>? StatusChanged;
     public event Action<double>? ProgressChanged;
 
+    /// <summary>
+    /// Resets the idle timer. Called on every route request to keep the map loaded.
+    /// </summary>
+    public void TouchIdleTimer()
+    {
+        _idleTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        _idleTimer?.Change(TimeSpan.FromSeconds(IdleTimeoutSeconds), Timeout.InfiniteTimeSpan);
+    }
+
+    /// <summary>
+    /// Releases the RouterDb from memory. Called by the idle timer after inactivity.
+    /// </summary>
+    private void UnloadMapIdle(object? state)
+    {
+        if (_unloading) return;
+        _unloading = true;
+        try
+        {
+            _idleTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            _mapRepository.ClearMaps();
+            GC.Collect(2, GCCollectionMode.Forced, true);
+            StatusChanged?.Invoke($"Map unloaded after {IdleTimeoutSeconds}s idle to free memory. Will reload on next request.");
+        }
+        finally
+        {
+            _unloading = false;
+        }
+    }
+
+    /// <summary>
+    /// Reloads the map from cache if it was unloaded due to idle timeout.
+    /// </summary>
+    private async Task EnsureMapLoadedAsync()
+    {
+        if (_mapRepository.IsLoaded) return;
+        if (string.IsNullOrEmpty(_cachedCachePath)) return;
+
+        StatusChanged?.Invoke("Reloading map from cache...");
+        await _mapRepository.LoadCacheAsync(_cachedCachePath);
+        TouchIdleTimer();
+    }
+
     public async Task LoadMapAsync(string osmPbfPath, bool avoidHighways = false)
     {
         _mapRepository.StatusChanged += _statusForwarder;
         await _mapRepository.LoadMapAsync(osmPbfPath, avoidHighways);
+        _cachedCachePath = _mapRepository.CachePath;
+        _avoidHighwaysCached = avoidHighways;
+        TouchIdleTimer();
     }
 
     public async Task LoadMapsAsync(string[] osmPbfPaths, bool avoidHighways = false)
     {
         _mapRepository.StatusChanged += _statusForwarder;
         await _mapRepository.LoadMapsAsync(osmPbfPaths, avoidHighways);
+        _cachedCachePath = _mapRepository.CachePath;
+        _avoidHighwaysCached = avoidHighways;
+        TouchIdleTimer();
     }
 
     public async Task LoadCacheAsync(string cachePath)
     {
         _mapRepository.StatusChanged += _statusForwarder;
         await _mapRepository.LoadCacheAsync(cachePath);
+        _cachedCachePath = cachePath;
+        _avoidHighwaysCached = false;
+        TouchIdleTimer();
     }
 
     public void DetachStatusHandler()
@@ -88,7 +146,31 @@ public class RoutingService
 
     public void ClearMaps()
     {
+        _idleTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        _cachedCachePath = null;
         _mapRepository.ClearMaps();
+    }
+
+    public async Task<RouteResponse> GenerateLoopRouteAsync(RouteRequest request, CancellationToken cancellationToken = default)
+    {
+        await EnsureMapLoadedAsync();
+
+        if (_mapRepository.Router == null || _mapRepository.RouterDb == null)
+        {
+            throw new InvalidOperationException("Map not loaded. Call LoadMapAsync first.");
+        }
+
+        TouchIdleTimer();
+        var profile = _mapRepository.RouterDb.GetSupportedProfile("motorcycle");
+
+        if (request.Waypoints.Count == 0)
+        {
+            return GenerateAutoLoop(request, profile, cancellationToken);
+        }
+        else
+        {
+            return GenerateWaypointRoute(request, profile, cancellationToken);
+        }
     }
 
     public RouteResponse GenerateLoopRoute(RouteRequest request, CancellationToken cancellationToken = default)
@@ -98,6 +180,7 @@ public class RoutingService
             throw new InvalidOperationException("Map not loaded. Call LoadMapAsync first.");
         }
 
+        TouchIdleTimer();
         var profile = _mapRepository.RouterDb.GetSupportedProfile("motorcycle");
 
         if (request.Waypoints.Count == 0)

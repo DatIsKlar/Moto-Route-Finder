@@ -6,8 +6,8 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./maps:/data/maps
-      - ./data:/data/uploads
+      - /home/user/MotorTour/maps:/data/maps
+      - /home/user/MotorTour/data:/data/uploads
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - MAPS_DIR=/data/maps
