@@ -234,7 +234,7 @@ public class RoutingService
         _lastHeartbeat = DateTime.MinValue;
         _cachedCachePath = null;
 
-        StatusChanged?.Invoke($"[MEM] ClearMaps START: {GetMemoryDiagnostics()}");
+        Console.WriteLine($"[MEM] ClearMaps START: {GetMemoryDiagnostics()}");
 
         // Step 1: Dispose pool
         if (_pool != null)
@@ -242,23 +242,23 @@ public class RoutingService
             var poolSize = _pool.Size;
             _pool.Dispose();
             _pool = null;
-            StatusChanged?.Invoke($"[MEM] Pool disposed ({poolSize} instances): {GetMemoryDiagnostics()}");
+            Console.WriteLine($"[MEM] Pool disposed ({poolSize} instances): {GetMemoryDiagnostics()}");
         }
         else
         {
-            StatusChanged?.Invoke($"[MEM] No pool to dispose: {GetMemoryDiagnostics()}");
+            Console.WriteLine($"[MEM] No pool to dispose: {GetMemoryDiagnostics()}");
         }
 
         // Step 2: Clear caches
         _roadClassifier.ClearCache();
-        StatusChanged?.Invoke($"[MEM] RoadClassifier cache cleared: {GetMemoryDiagnostics()}");
+        Console.WriteLine($"[MEM] RoadClassifier cache cleared: {GetMemoryDiagnostics()}");
 
         MapRepository.ClearStaticCache();
-        StatusChanged?.Invoke($"[MEM] Static edge quality cache cleared: {GetMemoryDiagnostics()}");
+        Console.WriteLine($"[MEM] Static edge quality cache cleared: {GetMemoryDiagnostics()}");
 
         // Step 3: Clear MapRepository (nulls RouterDb, Router, EdgeBlocker)
         _mapRepository.ClearMaps();
-        StatusChanged?.Invoke($"[MEM] MapRepository.ClearMaps done: {GetMemoryDiagnostics()}");
+        Console.WriteLine($"[MEM] MapRepository.ClearMaps done: {GetMemoryDiagnostics()}");
 
         // Step 4: GC pass 1 — collect all generations + finalizers
         var gcBefore1 = GC.GetTotalMemory(false);
@@ -273,7 +273,7 @@ public class RoutingService
         GC.WaitForPendingFinalizers();
 
         var gcAfter1 = GC.GetTotalMemory(false);
-        StatusChanged?.Invoke($"[MEM] GC pass 1 done: freed {gcBefore1 - gcAfter1:N0} bytes managed. Before={GetMemoryDiagnostics()} (Gen0={gen0_1},Gen1={gen1_1},Gen2={gen2_1}) After={GetMemoryDiagnostics()} ({gcInfo1})");
+        Console.WriteLine($"[MEM] GC pass 1 done: freed {gcBefore1 - gcAfter1:N0} bytes managed. Before={GetMemoryDiagnostics()} (Gen0={gen0_1},Gen1={gen1_1},Gen2={gen2_1}) After={GetMemoryDiagnostics()} ({gcInfo1})");
 
         // Step 5: GC pass 2 — compact LOH
         GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
@@ -285,7 +285,7 @@ public class RoutingService
 
         var gcAfter2 = GC.GetTotalMemory(false);
         var lohAfter = GC.GetGCMemoryInfo().GenerationInfo[3].SizeAfterBytes;
-        StatusChanged?.Invoke($"[MEM] GC pass 2 (LOH compact) done: freed {gcBefore2 - gcAfter2:N0} bytes managed, LOH {lohBefore:N0} -> {lohAfter:N0}. {GetMemoryDiagnostics()}");
+        Console.WriteLine($"[MEM] GC pass 2 (LOH compact) done: freed {gcBefore2 - gcAfter2:N0} bytes managed, LOH {lohBefore:N0} -> {lohAfter:N0}. {GetMemoryDiagnostics()}");
 
         // Step 6: malloc_trim on Linux
         if (OperatingSystem.IsLinux())
@@ -293,10 +293,10 @@ public class RoutingService
             var rssBefore = GetRssKB();
             malloc_trim(0);
             var rssAfter = GetRssKB();
-            StatusChanged?.Invoke($"[MEM] malloc_trim: RSS {rssBefore}KB -> {rssAfter}KB (freed {rssBefore - rssAfter}KB). {GetMemoryDiagnostics()}");
+            Console.WriteLine($"[MEM] malloc_trim: RSS {rssBefore}KB -> {rssAfter}KB (freed {rssBefore - rssAfter}KB). {GetMemoryDiagnostics()}");
         }
 
-        StatusChanged?.Invoke($"[MEM] ClearMaps DONE: {GetMemoryDiagnostics()}");
+        Console.WriteLine($"[MEM] ClearMaps DONE: {GetMemoryDiagnostics()}");
     }
 
     private static string GetMemoryDiagnostics()
