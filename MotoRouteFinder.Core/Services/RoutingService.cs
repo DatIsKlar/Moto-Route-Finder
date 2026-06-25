@@ -20,6 +20,11 @@ public class RoutingService
     [DllImport("libc", SetLastError = true)]
     private static extern int malloc_trim(int pad);
 
+    [DllImport("libc", SetLastError = true)]
+    private static extern int mallopt(int param, int value);
+
+    private const int M_PURGE = -6;
+
     private readonly MapRepository _mapRepository = new();
     private readonly RoadClassifier _roadClassifier;
     private readonly EdgeBlocker _edgeBlocker;
@@ -260,40 +265,41 @@ public class RoutingService
         _mapRepository.ClearMaps();
         Console.WriteLine($"[MEM] MapRepository.ClearMaps done: {GetMemoryDiagnostics()}");
 
-        // Step 4: GC pass 1 — collect all generations + finalizers
+        // Step 4: GC pass 1 — aggressive collect + finalizers
         var gcBefore1 = GC.GetTotalMemory(false);
         var gcInfo1 = GetGCMemoryInfoString();
         var gen0_1 = GC.CollectionCount(0);
         var gen1_1 = GC.CollectionCount(1);
         var gen2_1 = GC.CollectionCount(2);
 
-        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
         GC.WaitForPendingFinalizers();
-        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
         GC.WaitForPendingFinalizers();
 
         var gcAfter1 = GC.GetTotalMemory(false);
         Console.WriteLine($"[MEM] GC pass 1 done: freed {gcBefore1 - gcAfter1:N0} bytes managed. Before={GetMemoryDiagnostics()} (Gen0={gen0_1},Gen1={gen1_1},Gen2={gen2_1}) After={GetMemoryDiagnostics()} ({gcInfo1})");
 
-        // Step 5: GC pass 2 — compact LOH
+        // Step 5: GC pass 2 — compact LOH + decommit
         GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
         var gcBefore2 = GC.GetTotalMemory(false);
         var lohBefore = GC.GetGCMemoryInfo().GenerationInfo[3].SizeAfterBytes;
 
-        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
         GC.WaitForPendingFinalizers();
 
         var gcAfter2 = GC.GetTotalMemory(false);
         var lohAfter = GC.GetGCMemoryInfo().GenerationInfo[3].SizeAfterBytes;
         Console.WriteLine($"[MEM] GC pass 2 (LOH compact) done: freed {gcBefore2 - gcAfter2:N0} bytes managed, LOH {lohBefore:N0} -> {lohAfter:N0}. {GetMemoryDiagnostics()}");
 
-        // Step 6: malloc_trim on Linux
+        // Step 6: mallopt(M_PURGE) on Linux — flush ALL glibc cached memory
         if (OperatingSystem.IsLinux())
         {
             var rssBefore = GetRssKB();
+            mallopt(M_PURGE, 0);
             malloc_trim(0);
             var rssAfter = GetRssKB();
-            Console.WriteLine($"[MEM] malloc_trim: RSS {rssBefore}KB -> {rssAfter}KB (freed {rssBefore - rssAfter}KB). {GetMemoryDiagnostics()}");
+            Console.WriteLine($"[MEM] mallopt(M_PURGE)+malloc_trim: RSS {rssBefore}KB -> {rssAfter}KB (freed {rssBefore - rssAfter}KB). {GetMemoryDiagnostics()}");
         }
 
         Console.WriteLine($"[MEM] ClearMaps DONE: {GetMemoryDiagnostics()}");
