@@ -52,6 +52,14 @@ public class RouteController : ControllerBase
         });
     }
 
+    [HttpGet("heartbeat")]
+    [HttpPost("heartbeat")]
+    public IActionResult Heartbeat()
+    {
+        _routingService.Heartbeat();
+        return Ok(new { status = "ok" });
+    }
+
     [HttpPost("maps/load")]
     public async Task<IActionResult> LoadMap([FromBody] LoadMapRequest request)
     {

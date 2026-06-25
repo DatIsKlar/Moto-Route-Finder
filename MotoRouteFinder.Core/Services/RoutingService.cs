@@ -26,12 +26,15 @@ public class RoutingService
 
     private const int MaxRouteAttempts = 3;
     private const double MaxRepetitionRatio = 0.05;
-    private const int IdleTimeoutSeconds = 300; // 5 minutes
+    private const int IdleTimeoutSeconds = 120; // 2 minutes
+    private const int HeartbeatTimeoutSeconds = 60; // unload 60s after last heartbeat
 
     private Timer? _idleTimer;
+    private Timer? _heartbeatTimer;
     private string? _cachedCachePath;
     private bool _avoidHighwaysCached;
     private bool _unloading;
+    private DateTime _lastHeartbeat = DateTime.MinValue;
 
     public RoutingService()
     {
@@ -44,6 +47,7 @@ public class RoutingService
         _routeStatistics = new RouteStatistics(_roadClassifier);
         _routeBuilder = new RouteBuilder(_mapRepository, _roadClassifier, _routeAssembler, _waypointGenerator, _stemFixer, _routeStatistics, _diagnostics, _edgeBlocker);
         _idleTimer = new Timer(UnloadMapIdle, null, Timeout.Infinite, Timeout.Infinite);
+        _heartbeatTimer = new Timer(CheckHeartbeat, null, Timeout.Infinite, Timeout.Infinite);
     }
 
     /// <summary>
@@ -112,6 +116,39 @@ public class RoutingService
         TouchIdleTimer();
     }
 
+    /// <summary>
+    /// Called by the client heartbeat. Resets the idle timer and records the heartbeat time.
+    /// </summary>
+    public void Heartbeat()
+    {
+        _lastHeartbeat = DateTime.UtcNow;
+        TouchIdleTimer();
+    }
+
+    /// <summary>
+    /// Starts the heartbeat monitoring. Called when a map is first loaded.
+    /// </summary>
+    private void StartHeartbeatMonitor()
+    {
+        _lastHeartbeat = DateTime.UtcNow;
+        _heartbeatTimer?.Change(TimeSpan.FromSeconds(HeartbeatTimeoutSeconds), TimeSpan.FromSeconds(HeartbeatTimeoutSeconds));
+    }
+
+    /// <summary>
+    /// Checks if the heartbeat has timed out. If no heartbeat for HeartbeatTimeoutSeconds, unloads the map.
+    /// </summary>
+    private void CheckHeartbeat(object? state)
+    {
+        if (_unloading || !_mapRepository.IsLoaded) return;
+        if (_lastHeartbeat == DateTime.MinValue) return;
+
+        var elapsed = (DateTime.UtcNow - _lastHeartbeat).TotalSeconds;
+        if (elapsed > HeartbeatTimeoutSeconds)
+        {
+            UnloadMapIdle(null);
+        }
+    }
+
     public async Task LoadMapAsync(string osmPbfPath, bool avoidHighways = false)
     {
         _mapRepository.StatusChanged += _statusForwarder;
@@ -119,6 +156,7 @@ public class RoutingService
         _cachedCachePath = _mapRepository.CachePath;
         _avoidHighwaysCached = avoidHighways;
         TouchIdleTimer();
+        StartHeartbeatMonitor();
     }
 
     public async Task LoadMapsAsync(string[] osmPbfPaths, bool avoidHighways = false)
@@ -128,6 +166,7 @@ public class RoutingService
         _cachedCachePath = _mapRepository.CachePath;
         _avoidHighwaysCached = avoidHighways;
         TouchIdleTimer();
+        StartHeartbeatMonitor();
     }
 
     public async Task LoadCacheAsync(string cachePath)
@@ -137,6 +176,7 @@ public class RoutingService
         _cachedCachePath = cachePath;
         _avoidHighwaysCached = false;
         TouchIdleTimer();
+        StartHeartbeatMonitor();
     }
 
     public void DetachStatusHandler()
@@ -147,6 +187,8 @@ public class RoutingService
     public void ClearMaps()
     {
         _idleTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        _heartbeatTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        _lastHeartbeat = DateTime.MinValue;
         _cachedCachePath = null;
         _mapRepository.ClearMaps();
     }
