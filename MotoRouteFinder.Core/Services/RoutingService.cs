@@ -240,8 +240,13 @@ public class RoutingService
         MapRepository.ClearStaticCache();
         _mapRepository.ClearMaps();
 
+        // First pass: force all finalizers and collect all generations
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+
+        // Second pass: compact LOH now that finalizers have run
         GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
-        GC.Collect(2, GCCollectionMode.Forced, true, true);
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
         GC.WaitForPendingFinalizers();
 
         if (OperatingSystem.IsLinux())

@@ -316,7 +316,16 @@ public class MapRepository
         {
             _routerDb = null;
             _router = null;
+            _edgeBlocker = null;
             _loadedMaps.Clear();
+            _loadedFromCache = false;
+            _motorwayCacheFile = "";
+            _motorwaysBlockedAtLoadTime = 0;
+            _motorwayBlockLoadTimeMs = 0;
+            _motorwaysInCache = false;
+            _motorwaysFailedToBlock = 0;
+            _motorwayBlockValidationPassed = false;
+            _motorwaysScanCompleted = false;
         }
     }
 
