@@ -7,12 +7,18 @@ const MotoApp = {
     isTestRunning: false,
     mode: 'generate',
     abortController: null,
+    heartbeatInterval: null,
 
     init() {
         MotoMap.init();
         this.bindEvents();
         this.updateTestFileCount();
         this.loadSavedMaps();
+        this.startHeartbeat();
+        window.addEventListener('beforeunload', () => {
+            navigator.sendBeacon('/api/route/maps/unload');
+            this.stopHeartbeat();
+        });
     },
 
     bindEvents() {
@@ -427,6 +433,20 @@ const MotoApp = {
             this.loadSavedMaps();
         } catch (err) {
             this.setStatus(`Error: ${err.message}`);
+        }
+    },
+
+    startHeartbeat() {
+        this.stopHeartbeat();
+        this.heartbeatInterval = setInterval(() => {
+            fetch('/api/route/heartbeat').catch(() => {});
+        }, 30000);
+    },
+
+    stopHeartbeat() {
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
         }
     },
 

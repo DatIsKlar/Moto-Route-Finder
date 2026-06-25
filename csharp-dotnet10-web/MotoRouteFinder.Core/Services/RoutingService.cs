@@ -2,6 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Itinero;
@@ -13,6 +17,14 @@ namespace MotoRouteFinder.Services;
 
 public class RoutingService
 {
+    [DllImport("libc", SetLastError = true)]
+    private static extern int malloc_trim(int pad);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int mallopt(int param, int value);
+
+    private const int M_PURGE = -6;
+
     private readonly MapRepository _mapRepository = new();
     private readonly RoadClassifier _roadClassifier;
     private readonly EdgeBlocker _edgeBlocker;
@@ -26,6 +38,16 @@ public class RoutingService
 
     private const int MaxRouteAttempts = 3;
     private const double MaxRepetitionRatio = 0.05;
+    private const int IdleTimeoutSeconds = 120; // 2 minutes
+    private const int HeartbeatTimeoutSeconds = 60; // unload 60s after last heartbeat
+
+    private Timer? _idleTimer;
+    private Timer? _heartbeatTimer;
+    private RouterDbPool? _pool;
+    private string? _cachedCachePath;
+    private bool _avoidHighwaysCached;
+    private bool _unloading;
+    private DateTime _lastHeartbeat = DateTime.MinValue;
 
     public RoutingService()
     {
@@ -37,6 +59,8 @@ public class RoutingService
         _stemFixer = new StemFixer(_mapRepository, _roadClassifier, _routeAssembler, _edgeBlocker);
         _routeStatistics = new RouteStatistics(_roadClassifier);
         _routeBuilder = new RouteBuilder(_mapRepository, _roadClassifier, _routeAssembler, _waypointGenerator, _stemFixer, _routeStatistics, _diagnostics, _edgeBlocker);
+        _idleTimer = new Timer(UnloadMapIdle, null, Timeout.Infinite, Timeout.Infinite);
+        _heartbeatTimer = new Timer(CheckHeartbeat, null, Timeout.Infinite, Timeout.Infinite);
     }
 
     /// <summary>
@@ -63,22 +87,144 @@ public class RoutingService
     public event Action<string>? StatusChanged;
     public event Action<double>? ProgressChanged;
 
+    /// <summary>
+    /// Resets the idle timer. Called on every route request to keep the map loaded.
+    /// </summary>
+    public void TouchIdleTimer()
+    {
+        _idleTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        _idleTimer?.Change(TimeSpan.FromSeconds(IdleTimeoutSeconds), Timeout.InfiniteTimeSpan);
+    }
+
+    /// <summary>
+    /// Ensures a RouterDbPool exists with at least the requested size.
+    /// Reuses existing pool if large enough, otherwise disposes and recreates.
+    /// </summary>
+    public RouterDbPool EnsurePool(int requestedSize)
+    {
+        if (_pool != null && _pool.Size >= requestedSize)
+            return _pool;
+
+        _pool?.Dispose();
+
+        if (string.IsNullOrEmpty(_cachedCachePath))
+            throw new InvalidOperationException("No cache path available. Load a map first.");
+
+        _pool = new RouterDbPool(_cachedCachePath, requestedSize);
+        _pool.WarmUpAsync(msg => StatusChanged?.Invoke(msg)).GetAwaiter().GetResult();
+        return _pool;
+    }
+
+    /// <summary>
+    /// Gets the current pool size, or 0 if no pool exists.
+    /// </summary>
+    public int CurrentPoolSize => _pool?.Size ?? 0;
+
+    /// <summary>
+    /// Releases the RouterDb from memory. Called by the idle timer after inactivity.
+    /// </summary>
+    private void UnloadMapIdle(object? state)
+    {
+        if (_unloading) return;
+        _unloading = true;
+        try
+        {
+            _idleTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            _heartbeatTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+
+            // Preserve cache path so EnsureMapLoadedAsync can reload after idle unload
+            var savedCachePath = _cachedCachePath;
+
+            StatusChanged?.Invoke("Idle timer fired — unloading map to free memory...");
+            ClearMaps();
+
+            // Restore cache path for future reload
+            _cachedCachePath = savedCachePath;
+
+            var memMB = Math.Round(GC.GetTotalMemory(false) / 1048576.0, 1);
+            StatusChanged?.Invoke($"Map unloaded. Memory: {memMB}MB. Will reload on next request.");
+        }
+        finally
+        {
+            _unloading = false;
+        }
+    }
+
+    /// <summary>
+    /// Reloads the map from cache if it was unloaded due to idle timeout.
+    /// </summary>
+    private async Task EnsureMapLoadedAsync()
+    {
+        if (_mapRepository.IsLoaded) return;
+        if (string.IsNullOrEmpty(_cachedCachePath)) return;
+
+        StatusChanged?.Invoke("Reloading map from cache...");
+        await _mapRepository.LoadCacheAsync(_cachedCachePath);
+        TouchIdleTimer();
+        StartHeartbeatMonitor();
+    }
+
+    /// <summary>
+    /// Called by the client heartbeat. Resets the idle timer and records the heartbeat time.
+    /// </summary>
+    public void Heartbeat()
+    {
+        _lastHeartbeat = DateTime.UtcNow;
+        TouchIdleTimer();
+    }
+
+    /// <summary>
+    /// Starts the heartbeat monitoring. Called when a map is first loaded.
+    /// </summary>
+    private void StartHeartbeatMonitor()
+    {
+        _lastHeartbeat = DateTime.UtcNow;
+        _heartbeatTimer?.Change(TimeSpan.FromSeconds(HeartbeatTimeoutSeconds), TimeSpan.FromSeconds(HeartbeatTimeoutSeconds));
+    }
+
+    /// <summary>
+    /// Checks if the heartbeat has timed out. If no heartbeat for HeartbeatTimeoutSeconds, unloads the map.
+    /// </summary>
+    private void CheckHeartbeat(object? state)
+    {
+        if (_unloading || !_mapRepository.IsLoaded) return;
+        if (_lastHeartbeat == DateTime.MinValue) return;
+
+        var elapsed = (DateTime.UtcNow - _lastHeartbeat).TotalSeconds;
+        if (elapsed > HeartbeatTimeoutSeconds)
+        {
+            UnloadMapIdle(null);
+        }
+    }
+
     public async Task LoadMapAsync(string osmPbfPath, bool avoidHighways = false)
     {
         _mapRepository.StatusChanged += _statusForwarder;
         await _mapRepository.LoadMapAsync(osmPbfPath, avoidHighways);
+        _cachedCachePath = _mapRepository.CachePath;
+        _avoidHighwaysCached = avoidHighways;
+        TouchIdleTimer();
+        StartHeartbeatMonitor();
     }
 
     public async Task LoadMapsAsync(string[] osmPbfPaths, bool avoidHighways = false)
     {
         _mapRepository.StatusChanged += _statusForwarder;
         await _mapRepository.LoadMapsAsync(osmPbfPaths, avoidHighways);
+        _cachedCachePath = _mapRepository.CachePath;
+        _avoidHighwaysCached = avoidHighways;
+        TouchIdleTimer();
+        StartHeartbeatMonitor();
     }
 
     public async Task LoadCacheAsync(string cachePath)
     {
         _mapRepository.StatusChanged += _statusForwarder;
         await _mapRepository.LoadCacheAsync(cachePath);
+        _cachedCachePath = cachePath;
+        _avoidHighwaysCached = false;
+        TouchIdleTimer();
+        StartHeartbeatMonitor();
     }
 
     public void DetachStatusHandler()
@@ -88,7 +234,159 @@ public class RoutingService
 
     public void ClearMaps()
     {
+        _idleTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        _heartbeatTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        _lastHeartbeat = DateTime.MinValue;
+        _cachedCachePath = null;
+
+        Console.WriteLine($"[MEM] ClearMaps START: {GetMemoryDiagnostics()}");
+
+        // Step 1: Dispose pool
+        if (_pool != null)
+        {
+            var poolSize = _pool.Size;
+            _pool.Dispose();
+            _pool = null;
+            Console.WriteLine($"[MEM] Pool disposed ({poolSize} instances): {GetMemoryDiagnostics()}");
+        }
+        else
+        {
+            Console.WriteLine($"[MEM] No pool to dispose: {GetMemoryDiagnostics()}");
+        }
+
+        // Step 2: Clear caches
+        _roadClassifier.ClearCache();
+        Console.WriteLine($"[MEM] RoadClassifier cache cleared: {GetMemoryDiagnostics()}");
+
+        MapRepository.ClearStaticCache();
+        Console.WriteLine($"[MEM] Static edge quality cache cleared: {GetMemoryDiagnostics()}");
+
+        // Step 3: Clear MapRepository (nulls RouterDb, Router, EdgeBlocker)
         _mapRepository.ClearMaps();
+        Console.WriteLine($"[MEM] MapRepository.ClearMaps done: {GetMemoryDiagnostics()}");
+
+        // Step 4: GC pass 1 — aggressive collect + finalizers
+        var gcBefore1 = GC.GetTotalMemory(false);
+        var gcInfo1 = GetGCMemoryInfoString();
+        var gen0_1 = GC.CollectionCount(0);
+        var gen1_1 = GC.CollectionCount(1);
+        var gen2_1 = GC.CollectionCount(2);
+
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+
+        var gcAfter1 = GC.GetTotalMemory(false);
+        Console.WriteLine($"[MEM] GC pass 1 done: freed {gcBefore1 - gcAfter1:N0} bytes managed. Before={GetMemoryDiagnostics()} (Gen0={gen0_1},Gen1={gen1_1},Gen2={gen2_1}) After={GetMemoryDiagnostics()} ({gcInfo1})");
+
+        // Step 5: GC pass 2 — compact LOH + decommit
+        GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+        var gcBefore2 = GC.GetTotalMemory(false);
+        var lohBefore = GC.GetGCMemoryInfo().GenerationInfo[3].SizeAfterBytes;
+
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+
+        var gcAfter2 = GC.GetTotalMemory(false);
+        var lohAfter = GC.GetGCMemoryInfo().GenerationInfo[3].SizeAfterBytes;
+        Console.WriteLine($"[MEM] GC pass 2 (LOH compact) done: freed {gcBefore2 - gcAfter2:N0} bytes managed, LOH {lohBefore:N0} -> {lohAfter:N0}. {GetMemoryDiagnostics()}");
+
+        // Step 6: mallopt(M_PURGE) on Linux — flush ALL glibc cached memory
+        if (OperatingSystem.IsLinux())
+        {
+            var rssBefore = GetRssKB();
+            mallopt(M_PURGE, 0);
+            malloc_trim(0);
+            var rssAfter = GetRssKB();
+            Console.WriteLine($"[MEM] mallopt(M_PURGE)+malloc_trim: RSS {rssBefore}KB -> {rssAfter}KB (freed {rssBefore - rssAfter}KB). {GetMemoryDiagnostics()}");
+        }
+
+        Console.WriteLine($"[MEM] ClearMaps DONE: {GetMemoryDiagnostics()}");
+    }
+
+    private static string GetMemoryDiagnostics()
+    {
+        try
+        {
+            var totalMem = GC.GetTotalMemory(false);
+            var totalAlloc = GC.GetTotalAllocatedBytes(false);
+            var gcInfo = GC.GetGCMemoryInfo();
+            var gen0 = gcInfo.GenerationInfo[0];
+            var gen1 = gcInfo.GenerationInfo[1];
+            var gen2 = gcInfo.GenerationInfo[2];
+            var loh = gcInfo.GenerationInfo[3];
+            var rssKB = GetRssKB();
+
+            return $"RSS={rssKB}KB, Managed={totalMem / 1048576.0:F1}MB, " +
+                   $"TotalAlloc={totalAlloc / 1048576.0:F1}MB, " +
+                   $"HeapSize={gcInfo.HeapSizeBytes / 1048576.0:F1}MB, " +
+                   $"Fragmented={gcInfo.FragmentedBytes / 1048576.0:F1}MB, " +
+                   $"Gen0={gen0.SizeBeforeBytes / 1048576.0:F1}MB, " +
+                   $"Gen1={gen1.SizeBeforeBytes / 1048576.0:F1}MB, " +
+                   $"Gen2={gen2.SizeBeforeBytes / 1048576.0:F1}MB, " +
+                   $"LOH={loh.SizeBeforeBytes / 1048576.0:F1}MB, " +
+                   $"Compacted={gcInfo.Compacted}";
+        }
+        catch (Exception ex)
+        {
+            return $"[diag error: {ex.Message}]";
+        }
+    }
+
+    private static string GetGCMemoryInfoString()
+    {
+        try
+        {
+            var info = GC.GetGCMemoryInfo();
+            return $"HeapSize={info.HeapSizeBytes / 1048576.0:F1}MB, Fragmented={info.FragmentedBytes / 1048576.0:F1}MB, TotalCommitted={info.TotalCommittedBytes / 1048576.0:F1}MB";
+        }
+        catch
+        {
+            return "[gc info unavailable]";
+        }
+    }
+
+    private static long GetRssKB()
+    {
+        try
+        {
+            if (!OperatingSystem.IsLinux()) return 0;
+            var status = File.ReadAllText("/proc/self/status");
+            foreach (var line in status.Split('\n'))
+            {
+                if (line.StartsWith("VmRSS:", StringComparison.Ordinal))
+                {
+                    var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2 && long.TryParse(parts[1], out var kb))
+                        return kb;
+                }
+            }
+        }
+        catch { }
+        return 0;
+    }
+
+    public async Task<RouteResponse> GenerateLoopRouteAsync(RouteRequest request, CancellationToken cancellationToken = default)
+    {
+        await EnsureMapLoadedAsync();
+
+        if (_mapRepository.Router == null || _mapRepository.RouterDb == null)
+        {
+            throw new InvalidOperationException("Map not loaded. Call LoadMapAsync first.");
+        }
+
+        TouchIdleTimer();
+        var profile = _mapRepository.RouterDb.GetSupportedProfile("motorcycle");
+
+        if (request.Waypoints.Count == 0)
+        {
+            return GenerateAutoLoop(request, profile, cancellationToken);
+        }
+        else
+        {
+            return GenerateWaypointRoute(request, profile, cancellationToken);
+        }
     }
 
     public RouteResponse GenerateLoopRoute(RouteRequest request, CancellationToken cancellationToken = default)
@@ -98,6 +396,7 @@ public class RoutingService
             throw new InvalidOperationException("Map not loaded. Call LoadMapAsync first.");
         }
 
+        TouchIdleTimer();
         var profile = _mapRepository.RouterDb.GetSupportedProfile("motorcycle");
 
         if (request.Waypoints.Count == 0)

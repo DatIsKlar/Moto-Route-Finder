@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+**/.vs/
+**/node_modules/
+**/publish/
+**/maps/
+**/data/
+**/.git/
+*.md
+*.sln.user

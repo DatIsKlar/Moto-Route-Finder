@@ -35,8 +35,29 @@ public class RouteController : ControllerBase
         {
             isLoaded = _routingService.IsLoaded,
             loadedMaps = _routingService.LoadedMaps,
-            cachePath = _routingService.CachePath
+            cachePath = _routingService.CachePath,
+            memoryMB = Math.Round(GC.GetTotalMemory(false) / 1048576.0, 1)
         });
+    }
+
+    [HttpPost("maps/unload")]
+    public IActionResult UnloadMap()
+    {
+        _routingService.ClearMaps();
+        var memMB = Math.Round(GC.GetTotalMemory(false) / 1048576.0, 1);
+        return Ok(new
+        {
+            status = "unloaded",
+            memoryMB = memMB
+        });
+    }
+
+    [HttpGet("heartbeat")]
+    [HttpPost("heartbeat")]
+    public IActionResult Heartbeat()
+    {
+        _routingService.Heartbeat();
+        return Ok(new { status = "ok" });
     }
 
     [HttpPost("maps/load")]
@@ -348,14 +369,11 @@ public class RouteController : ControllerBase
     }
 
     [HttpPost("routes/generate")]
-    public IActionResult GenerateRoute([FromBody] RouteRequest request)
+    public async Task<IActionResult> GenerateRoute([FromBody] RouteRequest request)
     {
-        if (!_routingService.IsLoaded)
-            return BadRequest(new { error = "No map loaded. Load a map first." });
-
         try
         {
-            var route = _routingService.GenerateLoopRoute(request);
+            var route = await _routingService.GenerateLoopRouteAsync(request);
             return Ok(route);
         }
         catch (Exception ex)
@@ -368,18 +386,16 @@ public class RouteController : ControllerBase
     [HttpPost("routes/generate-candidates")]
     public async Task<IActionResult> GenerateRouteCandidates([FromBody] GenerateCandidatesRequest request)
     {
-        if (!_routingService.IsLoaded)
-            return BadRequest(new { error = "No map loaded. Load a map first." });
-
         try
         {
             var cachePath = _routingService.CachePath;
             if (string.IsNullOrEmpty(cachePath))
-                return BadRequest(new { error = "No cache path available" });
+                return BadRequest(new { error = "No map loaded. Load a map first." });
 
             var poolSize = request.CandidateCount > 0 ? request.CandidateCount : 4;
-            using var pool = new RouterDbPool(cachePath, poolSize);
-            await pool.WarmUpAsync(msg => _logger.LogInformation(msg));
+            var pool = _routingService.EnsurePool(poolSize);
+
+            _routingService.TouchIdleTimer();
 
             var (best, allCandidates) = RoutingService.GenerateLoopRouteCandidates(
                 request.RouteRequest, pool, poolSize);

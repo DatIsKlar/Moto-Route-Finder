@@ -314,10 +314,39 @@ public class MapRepository
     {
         lock (_lock)
         {
+            var hadRouterDb = _routerDb != null;
+            var hadRouter = _router != null;
+            var hadEdgeBlocker = _edgeBlocker != null;
+            var loadedCount = _loadedMaps.Count;
+            var routerDbEdges = _routerDb?.Network?.EdgeCount ?? 0;
+
             _routerDb = null;
             _router = null;
+            _edgeBlocker = null;
             _loadedMaps.Clear();
+            _loadedFromCache = false;
+            _motorwayCacheFile = "";
+            _motorwaysBlockedAtLoadTime = 0;
+            _motorwayBlockLoadTimeMs = 0;
+            _motorwaysInCache = false;
+            _motorwaysFailedToBlock = 0;
+            _motorwayBlockValidationPassed = false;
+            _motorwaysScanCompleted = false;
+
+            Console.WriteLine($"[MEM] MapRepository.ClearMaps: RouterDb={hadRouterDb} (edges={routerDbEdges}), Router={hadRouter}, EdgeBlocker={hadEdgeBlocker}, LoadedMaps={loadedCount}");
         }
+    }
+
+    /// <summary>
+    /// Clears the static edge quality cache shared across all pool instances.
+    /// Call this when unloading maps to free memory.
+    /// </summary>
+    public static void ClearStaticCache()
+    {
+        var count = _staticEdgeQualityCache?.Count ?? 0;
+        _staticEdgeQualityCache?.Clear();
+        _staticEdgeQualityCache = null;
+        Console.WriteLine($"[MEM] ClearStaticCache: cleared {count} edge quality entries");
     }
 
     private static string GetCachePath(string osmPbfPath)
