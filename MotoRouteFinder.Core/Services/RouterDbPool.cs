@@ -113,9 +113,12 @@ public class RouterDbPool : IDisposable
     public void Dispose()
     {
         _disposed = true;
+        int count = 0;
         while (_pool.TryDequeue(out var repo))
         {
             repo?.ClearMaps();
+            count++;
         }
+        Console.WriteLine($"[MEM] RouterDbPool.Dispose: cleared {count} MapRepository instances (pool size was {_size}, checked out was {_checkedOut})");
     }
 }

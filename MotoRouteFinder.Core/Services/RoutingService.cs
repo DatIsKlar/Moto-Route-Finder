@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Itinero;
@@ -233,26 +234,131 @@ public class RoutingService
         _lastHeartbeat = DateTime.MinValue;
         _cachedCachePath = null;
 
-        _pool?.Dispose();
-        _pool = null;
+        StatusChanged?.Invoke($"[MEM] ClearMaps START: {GetMemoryDiagnostics()}");
 
+        // Step 1: Dispose pool
+        if (_pool != null)
+        {
+            var poolSize = _pool.Size;
+            _pool.Dispose();
+            _pool = null;
+            StatusChanged?.Invoke($"[MEM] Pool disposed ({poolSize} instances): {GetMemoryDiagnostics()}");
+        }
+        else
+        {
+            StatusChanged?.Invoke($"[MEM] No pool to dispose: {GetMemoryDiagnostics()}");
+        }
+
+        // Step 2: Clear caches
         _roadClassifier.ClearCache();
+        StatusChanged?.Invoke($"[MEM] RoadClassifier cache cleared: {GetMemoryDiagnostics()}");
+
         MapRepository.ClearStaticCache();
+        StatusChanged?.Invoke($"[MEM] Static edge quality cache cleared: {GetMemoryDiagnostics()}");
+
+        // Step 3: Clear MapRepository (nulls RouterDb, Router, EdgeBlocker)
         _mapRepository.ClearMaps();
+        StatusChanged?.Invoke($"[MEM] MapRepository.ClearMaps done: {GetMemoryDiagnostics()}");
 
-        // First pass: force all finalizers and collect all generations
+        // Step 4: GC pass 1 — collect all generations + finalizers
+        var gcBefore1 = GC.GetTotalMemory(false);
+        var gcInfo1 = GetGCMemoryInfoString();
+        var gen0_1 = GC.CollectionCount(0);
+        var gen1_1 = GC.CollectionCount(1);
+        var gen2_1 = GC.CollectionCount(2);
+
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
         GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
         GC.WaitForPendingFinalizers();
 
-        // Second pass: compact LOH now that finalizers have run
+        var gcAfter1 = GC.GetTotalMemory(false);
+        StatusChanged?.Invoke($"[MEM] GC pass 1 done: freed {gcBefore1 - gcAfter1:N0} bytes managed. Before={GetMemoryDiagnostics()} (Gen0={gen0_1},Gen1={gen1_1},Gen2={gen2_1}) After={GetMemoryDiagnostics()} ({gcInfo1})");
+
+        // Step 5: GC pass 2 — compact LOH
         GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+        var gcBefore2 = GC.GetTotalMemory(false);
+        var lohBefore = GC.GetGCMemoryInfo().GenerationInfo[3].SizeAfterBytes;
+
         GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
         GC.WaitForPendingFinalizers();
 
+        var gcAfter2 = GC.GetTotalMemory(false);
+        var lohAfter = GC.GetGCMemoryInfo().GenerationInfo[3].SizeAfterBytes;
+        StatusChanged?.Invoke($"[MEM] GC pass 2 (LOH compact) done: freed {gcBefore2 - gcAfter2:N0} bytes managed, LOH {lohBefore:N0} -> {lohAfter:N0}. {GetMemoryDiagnostics()}");
+
+        // Step 6: malloc_trim on Linux
         if (OperatingSystem.IsLinux())
         {
+            var rssBefore = GetRssKB();
             malloc_trim(0);
+            var rssAfter = GetRssKB();
+            StatusChanged?.Invoke($"[MEM] malloc_trim: RSS {rssBefore}KB -> {rssAfter}KB (freed {rssBefore - rssAfter}KB). {GetMemoryDiagnostics()}");
         }
+
+        StatusChanged?.Invoke($"[MEM] ClearMaps DONE: {GetMemoryDiagnostics()}");
+    }
+
+    private static string GetMemoryDiagnostics()
+    {
+        try
+        {
+            var totalMem = GC.GetTotalMemory(false);
+            var totalAlloc = GC.GetTotalAllocatedBytes(false);
+            var gcInfo = GC.GetGCMemoryInfo();
+            var gen0 = gcInfo.GenerationInfo[0];
+            var gen1 = gcInfo.GenerationInfo[1];
+            var gen2 = gcInfo.GenerationInfo[2];
+            var loh = gcInfo.GenerationInfo[3];
+            var rssKB = GetRssKB();
+
+            return $"RSS={rssKB}KB, Managed={totalMem / 1048576.0:F1}MB, " +
+                   $"TotalAlloc={totalAlloc / 1048576.0:F1}MB, " +
+                   $"HeapSize={gcInfo.HeapSizeBytes / 1048576.0:F1}MB, " +
+                   $"Fragmented={gcInfo.FragmentedBytes / 1048576.0:F1}MB, " +
+                   $"Gen0={gen0.SizeBeforeBytes / 1048576.0:F1}MB, " +
+                   $"Gen1={gen1.SizeBeforeBytes / 1048576.0:F1}MB, " +
+                   $"Gen2={gen2.SizeBeforeBytes / 1048576.0:F1}MB, " +
+                   $"LOH={loh.SizeBeforeBytes / 1048576.0:F1}MB, " +
+                   $"Compacted={gcInfo.Compacted}";
+        }
+        catch (Exception ex)
+        {
+            return $"[diag error: {ex.Message}]";
+        }
+    }
+
+    private static string GetGCMemoryInfoString()
+    {
+        try
+        {
+            var info = GC.GetGCMemoryInfo();
+            return $"HeapSize={info.HeapSizeBytes / 1048576.0:F1}MB, Fragmented={info.FragmentedBytes / 1048576.0:F1}MB, TotalCommitted={info.TotalCommittedBytes / 1048576.0:F1}MB";
+        }
+        catch
+        {
+            return "[gc info unavailable]";
+        }
+    }
+
+    private static long GetRssKB()
+    {
+        try
+        {
+            if (!OperatingSystem.IsLinux()) return 0;
+            var status = File.ReadAllText("/proc/self/status");
+            foreach (var line in status.Split('\n'))
+            {
+                if (line.StartsWith("VmRSS:", StringComparison.Ordinal))
+                {
+                    var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2 && long.TryParse(parts[1], out var kb))
+                        return kb;
+                }
+            }
+        }
+        catch { }
+        return 0;
     }
 
     public async Task<RouteResponse> GenerateLoopRouteAsync(RouteRequest request, CancellationToken cancellationToken = default)
