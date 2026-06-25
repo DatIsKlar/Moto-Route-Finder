@@ -393,8 +393,7 @@ public class RouteController : ControllerBase
                 return BadRequest(new { error = "No map loaded. Load a map first." });
 
             var poolSize = request.CandidateCount > 0 ? request.CandidateCount : 4;
-            using var pool = new RouterDbPool(cachePath, poolSize);
-            await pool.WarmUpAsync(msg => _logger.LogInformation(msg));
+            var pool = _routingService.EnsurePool(poolSize);
 
             _routingService.TouchIdleTimer();
 

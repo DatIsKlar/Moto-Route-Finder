@@ -37,6 +37,7 @@ public class RoutingService
 
     private Timer? _idleTimer;
     private Timer? _heartbeatTimer;
+    private RouterDbPool? _pool;
     private string? _cachedCachePath;
     private bool _avoidHighwaysCached;
     private bool _unloading;
@@ -90,6 +91,30 @@ public class RoutingService
     }
 
     /// <summary>
+    /// Ensures a RouterDbPool exists with at least the requested size.
+    /// Reuses existing pool if large enough, otherwise disposes and recreates.
+    /// </summary>
+    public RouterDbPool EnsurePool(int requestedSize)
+    {
+        if (_pool != null && _pool.Size >= requestedSize)
+            return _pool;
+
+        _pool?.Dispose();
+
+        if (string.IsNullOrEmpty(_cachedCachePath))
+            throw new InvalidOperationException("No cache path available. Load a map first.");
+
+        _pool = new RouterDbPool(_cachedCachePath, requestedSize);
+        _pool.WarmUpAsync(msg => StatusChanged?.Invoke(msg)).GetAwaiter().GetResult();
+        return _pool;
+    }
+
+    /// <summary>
+    /// Gets the current pool size, or 0 if no pool exists.
+    /// </summary>
+    public int CurrentPoolSize => _pool?.Size ?? 0;
+
+    /// <summary>
     /// Releases the RouterDb from memory. Called by the idle timer after inactivity.
     /// </summary>
     private void UnloadMapIdle(object? state)
@@ -101,25 +126,14 @@ public class RoutingService
             _idleTimer?.Change(Timeout.Infinite, Timeout.Infinite);
             _heartbeatTimer?.Change(Timeout.Infinite, Timeout.Infinite);
 
-            StatusChanged?.Invoke($"Idle timer fired — unloading map to free memory...");
+            // Preserve cache path so EnsureMapLoadedAsync can reload after idle unload
+            var savedCachePath = _cachedCachePath;
 
-            // Clear all caches before releasing the RouterDb
-            _roadClassifier.ClearCache();
-            MapRepository.ClearStaticCache();
+            StatusChanged?.Invoke("Idle timer fired — unloading map to free memory...");
+            ClearMaps();
 
-            // Release the RouterDb
-            _mapRepository.ClearMaps();
-
-            // Force full GC collection with LOH compaction
-            GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
-            GC.Collect(2, GCCollectionMode.Forced, true, true);
-            GC.WaitForPendingFinalizers();
-
-            // On Linux, tell glibc to return free pages to the OS
-            if (OperatingSystem.IsLinux())
-            {
-                malloc_trim(0);
-            }
+            // Restore cache path for future reload
+            _cachedCachePath = savedCachePath;
 
             var memMB = Math.Round(GC.GetTotalMemory(false) / 1048576.0, 1);
             StatusChanged?.Invoke($"Map unloaded. Memory: {memMB}MB. Will reload on next request.");
@@ -218,6 +232,9 @@ public class RoutingService
         _heartbeatTimer?.Change(Timeout.Infinite, Timeout.Infinite);
         _lastHeartbeat = DateTime.MinValue;
         _cachedCachePath = null;
+
+        _pool?.Dispose();
+        _pool = null;
 
         _roadClassifier.ClearCache();
         MapRepository.ClearStaticCache();
