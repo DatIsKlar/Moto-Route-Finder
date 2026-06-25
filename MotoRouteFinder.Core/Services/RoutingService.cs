@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Itinero;
@@ -13,6 +14,9 @@ namespace MotoRouteFinder.Services;
 
 public class RoutingService
 {
+    [DllImport("libc", SetLastError = true)]
+    private static extern int malloc_trim(int pad);
+
     private readonly MapRepository _mapRepository = new();
     private readonly RoadClassifier _roadClassifier;
     private readonly EdgeBlocker _edgeBlocker;
@@ -93,9 +97,30 @@ public class RoutingService
         try
         {
             _idleTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            _heartbeatTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+
+            StatusChanged?.Invoke($"Idle timer fired — unloading map to free memory...");
+
+            // Clear all caches before releasing the RouterDb
+            _roadClassifier.ClearCache();
+            MapRepository.ClearStaticCache();
+
+            // Release the RouterDb
             _mapRepository.ClearMaps();
+
+            // Force full GC collection (Gen 2 + LOH)
             GC.Collect(2, GCCollectionMode.Forced, true);
-            StatusChanged?.Invoke($"Map unloaded after {IdleTimeoutSeconds}s idle to free memory. Will reload on next request.");
+            GC.WaitForPendingFinalizers();
+            GC.Collect(2, GCCollectionMode.Forced, true);
+
+            // On Linux, tell glibc to return free pages to the OS
+            if (OperatingSystem.IsLinux())
+            {
+                malloc_trim(0);
+            }
+
+            var memMB = Math.Round(GC.GetTotalMemory(false) / 1048576.0, 1);
+            StatusChanged?.Invoke($"Map unloaded. Memory: {memMB}MB. Will reload on next request.");
         }
         finally
         {
@@ -190,7 +215,19 @@ public class RoutingService
         _heartbeatTimer?.Change(Timeout.Infinite, Timeout.Infinite);
         _lastHeartbeat = DateTime.MinValue;
         _cachedCachePath = null;
+
+        _roadClassifier.ClearCache();
+        MapRepository.ClearStaticCache();
         _mapRepository.ClearMaps();
+
+        GC.Collect(2, GCCollectionMode.Forced, true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(2, GCCollectionMode.Forced, true);
+
+        if (OperatingSystem.IsLinux())
+        {
+            malloc_trim(0);
+        }
     }
 
     public async Task<RouteResponse> GenerateLoopRouteAsync(RouteRequest request, CancellationToken cancellationToken = default)

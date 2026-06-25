@@ -49,6 +49,14 @@ public class RoadClassifier
         _resolveCache.Clear();
     }
 
+    /// <summary>
+    /// Clears the resolve cache to free memory when maps are unloaded.
+    /// </summary>
+    public void ClearCache()
+    {
+        _resolveCache.Clear();
+    }
+
     public Coordinate? TryResolveToRoad(IProfileInstance profile, Coordinate point, float maxSearchDistance = 2000)
     {
         if (_mapRepository.Router == null) return null;

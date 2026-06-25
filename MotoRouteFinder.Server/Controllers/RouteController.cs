@@ -44,11 +44,11 @@ public class RouteController : ControllerBase
     public IActionResult UnloadMap()
     {
         _routingService.ClearMaps();
-        GC.Collect(2, GCCollectionMode.Forced, true);
+        var memMB = Math.Round(GC.GetTotalMemory(false) / 1048576.0, 1);
         return Ok(new
         {
             status = "unloaded",
-            memoryMB = Math.Round(GC.GetTotalMemory(false) / 1048576.0, 1)
+            memoryMB = memMB
         });
     }
 

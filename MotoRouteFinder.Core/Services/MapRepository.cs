@@ -320,6 +320,16 @@ public class MapRepository
         }
     }
 
+    /// <summary>
+    /// Clears the static edge quality cache shared across all pool instances.
+    /// Call this when unloading maps to free memory.
+    /// </summary>
+    public static void ClearStaticCache()
+    {
+        _staticEdgeQualityCache?.Clear();
+        _staticEdgeQualityCache = null;
+    }
+
     private static string GetCachePath(string osmPbfPath)
     {
         var baseName = Path.GetFileNameWithoutExtension(osmPbfPath);
