@@ -117,7 +117,5 @@ public class RouterDbPool : IDisposable
         {
             repo?.ClearMaps();
         }
-        GC.Collect(2, GCCollectionMode.Forced, true);
-        GC.WaitForPendingFinalizers();
     }
 }

@@ -108,10 +108,10 @@ public class RoutingService
             // Release the RouterDb
             _mapRepository.ClearMaps();
 
-            // Force full GC collection (Gen 2 + LOH)
-            GC.Collect(2, GCCollectionMode.Forced, true);
+            // Force full GC collection with LOH compaction
+            GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(2, GCCollectionMode.Forced, true, true);
             GC.WaitForPendingFinalizers();
-            GC.Collect(2, GCCollectionMode.Forced, true);
 
             // On Linux, tell glibc to return free pages to the OS
             if (OperatingSystem.IsLinux())
@@ -139,6 +139,7 @@ public class RoutingService
         StatusChanged?.Invoke("Reloading map from cache...");
         await _mapRepository.LoadCacheAsync(_cachedCachePath);
         TouchIdleTimer();
+        StartHeartbeatMonitor();
     }
 
     /// <summary>
@@ -220,9 +221,9 @@ public class RoutingService
         MapRepository.ClearStaticCache();
         _mapRepository.ClearMaps();
 
-        GC.Collect(2, GCCollectionMode.Forced, true);
+        GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(2, GCCollectionMode.Forced, true, true);
         GC.WaitForPendingFinalizers();
-        GC.Collect(2, GCCollectionMode.Forced, true);
 
         if (OperatingSystem.IsLinux())
         {
