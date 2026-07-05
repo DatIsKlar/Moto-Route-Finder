@@ -69,31 +69,31 @@ dotnet run --project MotoRouteFinder.Server
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Browser (UI)                      │
-│  Leaflet.js map  ·  Route settings  ·  Stats panel  │
-│  Click markers   ·  Generate btn    ·  Export btns   │
-└──────────────────────┬──────────────────────────────┘
-                       │ HTTP/JSON
-┌──────────────────────▼──────────────────────────────┐
-│              MotoRouteFinder.Server                  │
-│         ASP.NET Core (Kestrel on port 5000)         │
-│    REST API  ·  Static files  ·  JSON serialization │
-└──────────────────────┬──────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────┐
-│              MotoRouteFinder.Core                    │
+┌──────────────────────────────────────────────────────┐
+│                     Browser (UI)                     │
+│ Leaflet.js map  ·  Route settings  ·  Stats panel    │
+│ Click markers   ·  Generate btn    ·  Export btns    │
+└───────────────────────────┬──────────────────────────┘
+                            │ HTTP/JSON
+┌───────────────────────────▼──────────────────────────┐
+│                MotoRouteFinder.Server                │
+│         ASP.NET Core (Kestrel on port 5000)          │
+│   REST API  ·  Static files  ·  JSON serialization   │
+└───────────────────────────┬──────────────────────────┘
+                            │
+┌───────────────────────────▼──────────────────────────┐
+│                 MotoRouteFinder.Core                 │
 │                                                      │
-│  RoutingService ── RouteBuilder ── RouteAssembler    │
-│       │                │               │             │
-│  MapRepository    WaypointGen    EdgeBlocker          │
-│  RoadClassifier   AltPathFinder  RouteAssembler       │
-│  RouterDbPool     EdgeBlocker    Diagnostics         │
-│       │                                                  │
-│  ┌────▼─────┐                                            │
-│  │ Itinero   │  Graph routing on OSM data               │
-│  │ (v1.6.0)  │  Custom MotorcycleProfile.lua            │
-│  └──────────┘                                            │
+│ RoutingService ── RouteBuilder ── RouteAssembler     │
+│ │                 │               │                  │
+│ MapRepository     WaypointGen     EdgeBlocker        │
+│ RoadClassifier    AltPathFinder   RouteAssembler     │
+│ RouterDbPool      EdgeBlocker     Diagnostics        │
+│                                                      │
+│ ┌────▼─────┐                                         │
+│ │ Itinero   │  Graph routing on OSM data             │
+│ │ (v1.6.0)  │  Custom MotorcycleProfile.lua          │
+│ └──────────┘                                         │
 └──────────────────────────────────────────────────────┘
 ```
 
