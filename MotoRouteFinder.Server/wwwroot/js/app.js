@@ -148,18 +148,22 @@ const MotoApp = {
     addPoint(lat, lon) {
         if (this.isGenerating || this.isTestRunning) return;
 
-        const type = this.points.length === 0 ? 'start' : 'waypoint';
-        const label = type === 'start' ? 'Start Point' : `Waypoint ${this.points.length}`;
-        const point = {
-            id: Date.now().toString(),
-            type: type,
-            coordinate: { lat, lon },
-            label: label
-        };
-
-        this.points.push(point);
-        this.refreshPointsUI();
-        this.setStatus(type === 'start' ? 'Start point set. Click to add waypoints' : `Added ${label}`);
+        if (this.points.length === 0) {
+            const point = {
+                id: Date.now().toString(),
+                type: 'start',
+                coordinate: { lat, lon },
+                label: 'Start Point'
+            };
+            this.points.push(point);
+            this.refreshPointsUI();
+            this.setStatus('Start point set. Click Generate to create a loop route.');
+        } else {
+            // Manual waypoints disabled — move start point instead
+            this.points[0].coordinate = { lat, lon };
+            this.refreshPointsUI();
+            this.setStatus('Start point moved. Manual waypoints are disabled — use auto-loop generation.');
+        }
     },
 
     removePoint(id) {

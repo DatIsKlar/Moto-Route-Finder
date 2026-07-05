@@ -103,7 +103,4 @@ public class RouteGenerationOptions
 
     // §20: Early-accept quality floor
     public double EarlyAcceptQualityScore { get; set; } = 90;
-
-    // Speed
-    public double AverageSpeedKmh { get; set; } = 30.0;
 }

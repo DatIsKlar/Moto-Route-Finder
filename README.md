@@ -223,23 +223,18 @@ csharp-dotnet10-web/
 
 ### appsettings.json
 
-| Section | Key | Default | Description |
-|---------|-----|---------|-------------|
-| Root | `MaxUploadSizeBytes` | `1073741824` | Max upload size (1 GB) |
-| `RouteGeneration` | `MaxRouteAttempts` | `3` | Max route generation attempts |
-| `RouteGeneration` | `MaxRepetitionRatio` | `0.05` | Max allowed repetition (5%) |
-| `RouteGeneration` | `AverageSpeedKmh` | `30.0` | Speed for ETA calculations |
-| `RouteGeneration` | `IdleTimeoutSeconds` | `120` | Map unload timeout |
-| `RouteGeneration` | `HeartbeatTimeoutSeconds` | `60` | Heartbeat timeout |
+The `RouteGeneration` section contains every tunable parameter with inline documentation. See `appsettings.json` for the full list with descriptions — all defaults match the code. Override any value by setting it in this section.
 
-`RouteGenerationOptions` has 45+ parameters with sensible defaults. Override via the `RouteGeneration` section in `appsettings.json`.
+| Key | Default | Description |
+|-----|---------|-------------|
+| `MaxUploadSizeBytes` | `1073741824` | Max upload size (1 GB) |
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `5000` | HTTP listen port |
-| `HOST` | `0.0.0.0` | HTTP listen address (set to `127.0.0.1` for local-only) |
+| `HOST` | `127.0.0.1` | HTTP listen address (set to `0.0.0.0` to expose on all interfaces) |
 | `MAPS_DIR` | `/data/maps` | Directory for map files and cache |
 | `ASPNETCORE_ENVIRONMENT` | `Production` | .NET environment |
 
@@ -248,7 +243,6 @@ csharp-dotnet10-web/
 | Container Path | Purpose |
 |----------------|---------|
 | `/data/maps` | Map files (`.osm.pbf`) and cache (`.routerdb`) |
-| `/data/uploads` | Uploaded map files |
 
 ## Tech Stack
 

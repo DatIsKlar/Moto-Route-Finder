@@ -43,13 +43,6 @@ public class RoutingService
     private readonly SemaphoreSlim _generationLock = new(1, 1);
     private int _inFlightRequests;
 
-    private const int MaxRouteAttempts = 3;
-    private const double MaxRepetitionRatio = 0.05;
-    private const int IdleTimeoutSeconds = 120; // 2 minutes
-    private const int HeartbeatTimeoutSeconds = 60; // unload 60s after last heartbeat
-    private const double RepetitionTiebreakerRatio = 1.05;
-    private const double OvershootThresholdMultiplier = 1.5;
-
     private Timer? _idleTimer;
     private Timer? _heartbeatTimer;
     private RouterDbPool? _pool;
@@ -103,7 +96,7 @@ public class RoutingService
     public void TouchIdleTimer()
     {
         _idleTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-        _idleTimer?.Change(TimeSpan.FromSeconds(IdleTimeoutSeconds), Timeout.InfiniteTimeSpan);
+        _idleTimer?.Change(TimeSpan.FromSeconds(_options.IdleTimeoutSeconds), Timeout.InfiniteTimeSpan);
     }
 
     /// <summary>
@@ -192,7 +185,7 @@ public class RoutingService
     private void StartHeartbeatMonitor()
     {
         _lastHeartbeat = DateTime.UtcNow;
-        _heartbeatTimer?.Change(TimeSpan.FromSeconds(HeartbeatTimeoutSeconds), TimeSpan.FromSeconds(HeartbeatTimeoutSeconds));
+        _heartbeatTimer?.Change(TimeSpan.FromSeconds(_options.HeartbeatTimeoutSeconds), TimeSpan.FromSeconds(_options.HeartbeatTimeoutSeconds));
     }
 
     /// <summary>
@@ -204,7 +197,7 @@ public class RoutingService
         if (_lastHeartbeat == DateTime.MinValue) return;
 
         var elapsed = (DateTime.UtcNow - _lastHeartbeat).TotalSeconds;
-        if (elapsed > HeartbeatTimeoutSeconds)
+        if (elapsed > _options.HeartbeatTimeoutSeconds)
         {
             UnloadMapIdle(null);
         }
@@ -451,7 +444,7 @@ public class RoutingService
         }
 
         // Within-cap: hard constraints + highest QualityScore
-        if (stats.TotalDistanceKm <= targetDist * OvershootThresholdMultiplier && repetition.OutAndBackM <= _options.OutAndBackOverlapThresholdM && stats.QualityScore > bestQualityWithinCap)
+        if (stats.TotalDistanceKm <= targetDist * _options.OvershootThresholdMultiplier && repetition.OutAndBackM <= _options.OutAndBackOverlapThresholdM && stats.QualityScore > bestQualityWithinCap)
         {
             bestQualityWithinCap = stats.QualityScore;
             bestRouteWithinCap = BuildRouteResponse(geometry, stats, allPoints, repetition, _routeStatistics.ReturnToStartIndex, _diagnostics.ToJson());
@@ -471,7 +464,7 @@ public class RoutingService
 
         // Motorways are now blocked at load time when avoidHighways is enabled
         // No runtime blocking needed — the RouterDb already has motorways blocked in the cache
-        StatusChanged?.Invoke($"Generating route (attempt 1/{MaxRouteAttempts})...");
+        StatusChanged?.Invoke($"Generating route (attempt 1/{_options.MaxRouteAttempts})...");
 
         _diagnostics.Clear();
 
@@ -492,7 +485,7 @@ public class RoutingService
         HashSet<int>? previousBlockedSectors = null;
         double? previousFailedBearing = null;
 
-        for (int attempt = 0; attempt < MaxRouteAttempts; attempt++)
+        for (int attempt = 0; attempt < _options.MaxRouteAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var attemptSw = System.Diagnostics.Stopwatch.StartNew();
@@ -500,8 +493,8 @@ public class RoutingService
             int gcStart = GC.CollectionCount(0);
             int gc1Start = GC.CollectionCount(1);
             int gc2Start = GC.CollectionCount(2);
-            StatusChanged?.Invoke($"Generating route (attempt {attempt + 1}/{MaxRouteAttempts})...");
-            ProgressChanged?.Invoke((double)attempt / MaxRouteAttempts);
+            StatusChanged?.Invoke($"Generating route (attempt {attempt + 1}/{_options.MaxRouteAttempts})...");
+            ProgressChanged?.Invoke((double)attempt / _options.MaxRouteAttempts);
 
             // Start with alternative path (GraphHopper-inspired) for best repetition avoidance
             // Fall back to progressive loop only if alternative fails
@@ -664,7 +657,7 @@ public class RoutingService
                 ref bestRepetition, ref bestQuality, ref bestAttempt, ref bestRoute,
                 ref bestQualityWithinCap, ref bestRouteWithinCap, attempt);
 
-            if (stats.RepetitionRatio <= MaxRepetitionRatio && stats.TotalDistanceKm <= targetDist * OvershootThresholdMultiplier && stats.QualityScore >= _options.EarlyAcceptQualityScore)
+            if (stats.RepetitionRatio <= _options.MaxRepetitionRatio && stats.TotalDistanceKm <= targetDist * _options.OvershootThresholdMultiplier && stats.QualityScore >= _options.EarlyAcceptQualityScore)
             {
                 StatusChanged?.Invoke($"Route generated (attempt {attempt + 1}, QS={stats.QualityScore:F0}, RR={stats.RepetitionRatio:P0})");
                 ProgressChanged?.Invoke(1.0);
@@ -674,9 +667,9 @@ public class RoutingService
 
             // Track rejection reason for this attempt
             var rejectionReasons = new List<string>();
-            if (stats.RepetitionRatio > MaxRepetitionRatio)
+            if (stats.RepetitionRatio > _options.MaxRepetitionRatio)
                 rejectionReasons.Add("high_repetition");
-            if (stats.TotalDistanceKm > targetDist * OvershootThresholdMultiplier)
+            if (stats.TotalDistanceKm > targetDist * _options.OvershootThresholdMultiplier)
                 rejectionReasons.Add("overshoot");
             if (rejectionReasons.Count == 0)
                 rejectionReasons.Add("continued");
@@ -696,7 +689,7 @@ public class RoutingService
             _diagnostics.Add(new DebugFinalSummary
             {
                 WinnerAttempt = bestAttempt,
-                TotalAttempts = MaxRouteAttempts,
+                TotalAttempts = _options.MaxRouteAttempts,
                 TargetDistanceKm = targetDist,
                 BestRepetitionRatio = bestRepetition,
                 BestTotalDistanceKm = returnRoute.Stats.TotalDistanceKm,
@@ -749,7 +742,7 @@ public class RoutingService
                 CacheFileMissingAtGen = !string.IsNullOrEmpty(_cachedCachePath) && !File.Exists(_cachedCachePath),
             });
             returnRoute.StemDiagnosticsJson = _diagnostics.ToJson();
-            StatusChanged?.Invoke($"Route generated (best of {MaxRouteAttempts} attempts, {bestRepetition:P0} repetition)");
+            StatusChanged?.Invoke($"Route generated (best of {_options.MaxRouteAttempts} attempts, {bestRepetition:P0} repetition)");
             ProgressChanged?.Invoke(1.0);
             return returnRoute!;
         }
@@ -1003,7 +996,7 @@ public class RoutingService
             MaxEdgeReuse = d.MaxEdgeReuse,
             AvgEdgeReuse = Math.Round(d.AvgEdgeReuse, 2),
             ElapsedMs = d.AttemptElapsedMs,
-            Resolution = stats.RepetitionRatio <= MaxRepetitionRatio && stats.TotalDistanceKm <= d.TargetDist * OvershootThresholdMultiplier && rep.OutAndBackM <= _options.OutAndBackOverlapThresholdM ? "winner" : "attempt_complete",
+            Resolution = stats.RepetitionRatio <= _options.MaxRepetitionRatio && stats.TotalDistanceKm <= d.TargetDist * _options.OvershootThresholdMultiplier && rep.OutAndBackM <= _options.OutAndBackOverlapThresholdM ? "winner" : "attempt_complete",
             StartPoint = new[] { d.Request.Start.Lat, d.Request.Start.Lon },
             BlockedSectorCounts = ctx.BlockedSectorCounts.ToArray(),
             PushAttemptsUsed = ctx.TotalPushAttemptsUsed,
