@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "MotoRouteFinder.Server": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "ENABLE_DEBUG_ENDPOINTS": "true"
+      },
+      "applicationUrl": "https://localhost:56835;http://localhost:56836"
+    }
+  }
+}
