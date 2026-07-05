@@ -321,4 +321,6 @@ The application should work well on slower PCs too. The `CandidateCount` setting
 
 ## License
 
-MIT
+This project's code is licensed under the [MIT License](LICENSE).
+
+Map data is © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, available under the [Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/). This project does not redistribute OSM data or derived route-cache files — maps are loaded and cached locally by each user from their own OSM extracts.
