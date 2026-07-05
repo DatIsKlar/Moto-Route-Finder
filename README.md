@@ -279,28 +279,6 @@ The application should work well on slower PCs too. The `CandidateCount` setting
 - CurvatureScore: mean 99.2 (piecewise-linear plateau, recalibrated)
 - CircularitySpread: mean 91.3 (de-saturated with 270° max spread)
 
-**Key fixes applied:**
-- §14: Restored uncached `RouteSingleSegment` in `AlternativePathFinder` — penalty escalation ladder now works correctly
-- §14a: Guard comments to prevent re-merging the shared-cache fix
-- §15: RepetitionRatio double-counting fix — `creditedIndices` prevents edge overlap + out-and-back overlap from counting the same segment twice
-- §16: Acceptable road credit factor (0.6) — acceptable-quality roads now partially contribute to road type score
-- §17: Curvature score recalibration — replaced Gaussian (centered at 0.001, penalizing twisty routes) with piecewise-linear plateau
-- §18: Circularity spread de-saturation — raised `MaxBearingSpreadDegrees` from 180° to 270° to stop pinning spread sub-score at 100
-- §20: Unified selection on QualityScore — candidates ranked by QS instead of RR; early-accept threshold QS ≥ 90
-- Step 1: Waypoint-mode QualityScore — was previously stuck at 0, now computed like auto-loop mode
-- Step 2: Candidate selection hardening — per-candidate try/catch, tie-break by QS then RR, clear error on all-fail
-- Step 3: Removed dead `PrecomputeEdgeQualities` (Itinero 1.5.1 enumerator returns 0 edges)
-- Step 4: Classification cache preserved across route attempts — `ResetStats()` instead of `ResetCounters()`, with block-window poison guard
-- Step 5: Spatial-index homing proximity check — replaces O(N) brute-force scan with O(cells) grid lookup
-- Step 6: Density cache per ~500m cell — `CountEdgesNearPoint` calls collapse from ~104 to ~13 per generation
-- Step 7: Probe-resolve cache for `HasRoadConnectivity` — coarse pass/fail resolves cached
-- Step 8: `ConcatenatePaths` pre-sized list allocation
-- Fix A: Block-window counter ownership moved to `BlockedEdgesScope` — stray increments/decrements removed from `BlockEdges`, `RestorePenalizedEdges`, `BlockMotorwaysPermanently`
-- Fix B: `RoadClassifier` injected with generation-time `EdgeBlocker` instance (was reading load-time instance via `_mapRepository.EdgeBlocker`)
-- H1: Path confinement — `IsPathAllowed` + `BrowseDirectory` reject paths outside `MAPS_DIR` with trailing-separator check
-- H2: Upload sanitization — `Path.GetFileName` strips directory traversal; extension allowlist enforced
-- Security: Default bind changed from `0.0.0.0` to `127.0.0.1` (Dockerfile overrides via `ENV HOST=0.0.0.0`)
-
 ### Known Limitations
 
 - **Memory baseline** — After idle unload, actual app memory (`anon` in cgroup stats) drops to ~85 MB (normal .NET runtime + ASP.NET overhead). However, Docker/Portainer memory stats include Linux page cache for files the app has read (e.g. `.routerdb` map caches), which can make total reported container memory appear much higher (~1.2–1.4 GB observed) even though the app's working memory is small. This is reclaimable, not a leak — the kernel evicts these pages instantly under real memory pressure. To check actual usage, run `docker exec <container> cat /sys/fs/cgroup/memory.stat` (cgroup v2) or `/sys/fs/cgroup/memory/memory.stat` (cgroup v1) and look at `anon` (real usage) vs `file`/`inactive_file` (reclaimable cache).
