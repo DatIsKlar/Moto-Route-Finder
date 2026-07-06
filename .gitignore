@@ -3,7 +3,6 @@ obj/
 .vs/
 *.user
 publish/
-.claude/
 
 # Runtime uploads (maps written by the app, not source)
 uploads/

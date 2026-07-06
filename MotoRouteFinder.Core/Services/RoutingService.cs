@@ -102,11 +102,20 @@ public class RoutingService
     /// <summary>
     /// Ensures a RouterDbPool exists with at least the requested size.
     /// Reuses existing pool if large enough, otherwise disposes and recreates.
+    /// Only disposes the old pool when no instances are checked out.
     /// </summary>
     public RouterDbPool EnsurePool(int requestedSize)
     {
         if (_pool != null && _pool.Size >= requestedSize)
             return _pool;
+
+        if (_pool != null && _pool.CheckedOutCount > 0)
+        {
+            // Cannot dispose pool while instances are in use — reuse existing
+            _logger?.LogWarning("[POOL] Cannot resize pool: {CheckedOut}/{Size} instances in use",
+                _pool.CheckedOutCount, _pool.Size);
+            return _pool;
+        }
 
         _pool?.Dispose();
 
@@ -362,6 +371,31 @@ public class RoutingService
     }
 
     /// <summary>
+    /// Instance wrapper around the static GenerateLoopRouteCandidates that tracks in-flight requests
+    /// to prevent the idle timer from disposing the pool mid-generation.
+    /// </summary>
+    public async Task<(RouteResponse best, RouteResponse[] allCandidates)> GenerateCandidatesAsync(
+        RouteRequest request,
+        int candidateCount,
+        IOptions<RouteGenerationOptions>? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _inFlightRequests);
+        TouchIdleTimer();
+        try
+        {
+            var pool = EnsurePool(candidateCount);
+            return await Task.Run(() =>
+                GenerateLoopRouteCandidates(request, pool, candidateCount, options, cancellationToken),
+                cancellationToken);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _inFlightRequests);
+        }
+    }
+
+    /// <summary>
     /// Generates multiple route candidates in parallel using separate RouterDb instances from the pool.
     /// Returns the best candidate (by QualityScore) and all candidates for comparison.
     /// </summary>
@@ -374,6 +408,7 @@ public class RoutingService
     {
         var repos = pool.CheckoutMultiple(candidateCount);
         var candidates = new RouteResponse[candidateCount];
+        Exception? firstError = null;
 
         try
         {
@@ -385,8 +420,10 @@ public class RoutingService
                     var service = new RoutingService(repos[i], options);
                     candidates[i] = service.GenerateLoopRoute(request, cancellationToken);
                 }
-                catch
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
                 {
+                    Interlocked.CompareExchange(ref firstError, ex, null);
                     candidates[i] = null;
                 }
             });
@@ -403,7 +440,11 @@ public class RoutingService
             .ThenBy(c => c!.Stats.RepetitionRatio)
             .ToList();
         if (valid.Count == 0)
-            throw new InvalidOperationException($"All {candidateCount} candidates failed to generate a route");
+        {
+            var detail = firstError?.Message ?? "unknown error";
+            throw new InvalidOperationException(
+                $"All {candidateCount} candidates failed to generate a route (first error: {detail})", firstError);
+        }
         var best = valid[0];
 
         return (best, candidates);
@@ -571,11 +612,8 @@ public class RoutingService
             for (int i = 0; i < geometry.Count - 1; i++)
             {
                 var key = RouteGeometryUtils.MakeEdgeKey(geometry[i], geometry[i + 1]);
-                var revKey = key.Reversed();
                 if (edgeReuseCounts.ContainsKey(key))
                     edgeReuseCounts[key]++;
-                else if (edgeReuseCounts.ContainsKey(revKey))
-                    edgeReuseCounts[revKey]++;
                 else
                     edgeReuseCounts[key] = 1;
             }

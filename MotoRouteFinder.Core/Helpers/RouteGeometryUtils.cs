@@ -145,10 +145,16 @@ public static class RouteGeometryUtils
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public EdgeKey(Coordinate a, Coordinate b)
         {
-            Lat1 = (int)Math.Round(a.Lat / GeoConstants.EdgeSnapGridDegrees);
-            Lon1 = (int)Math.Round(a.Lon / GeoConstants.EdgeSnapGridDegrees);
-            Lat2 = (int)Math.Round(b.Lat / GeoConstants.EdgeSnapGridDegrees);
-            Lon2 = (int)Math.Round(b.Lon / GeoConstants.EdgeSnapGridDegrees);
+            int lat1 = (int)Math.Round(a.Lat / GeoConstants.EdgeSnapGridDegrees);
+            int lon1 = (int)Math.Round(a.Lon / GeoConstants.EdgeSnapGridDegrees);
+            int lat2 = (int)Math.Round(b.Lat / GeoConstants.EdgeSnapGridDegrees);
+            int lon2 = (int)Math.Round(b.Lon / GeoConstants.EdgeSnapGridDegrees);
+            // Normalize ordering so both directions of the same edge produce the same key
+            if (((long)lat1 << 32 | (uint)lon1) > ((long)lat2 << 32 | (uint)lon2))
+            {
+                (lat1, lon1, lat2, lon2) = (lat2, lon2, lat1, lon1);
+            }
+            Lat1 = lat1; Lon1 = lon1; Lat2 = lat2; Lon2 = lon2;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -167,6 +173,10 @@ public static class RouteGeometryUtils
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public EdgeKey Reversed() => new EdgeKey(Lat2, Lon2, Lat1, Lon1);
     }
+    /// <summary>
+    /// Equirectangular approximation of distance in meters. Named "Haversine" for historical reasons.
+    /// Accurate to &lt;0.1% for distances under 5 km. Do NOT use for long-distance or high-latitude calculations.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static double HaversineDistance(Coordinate a, Coordinate b)
     {
@@ -348,7 +358,7 @@ public static class RouteGeometryUtils
         for (int i = 0; i < segment.Count - 1; i++)
         {
             var key = new EdgeKey(segment[i], segment[i + 1]);
-            if (usedEdges.Contains(key) || usedEdges.Contains(key.Reversed()))
+            if (usedEdges.Contains(key))
             {
                 double edgeDist = HaversineDistance(segment[i], segment[i + 1]);
                 double midLat = (segment[i].Lat + segment[i + 1].Lat) / 2;
@@ -373,7 +383,7 @@ public static class RouteGeometryUtils
         for (int i = 0; i < segment.Count - 1; i++)
         {
             var key = new EdgeKey(segment[i], segment[i + 1]);
-            if (usedEdges.Contains(key) || usedEdges.Contains(key.Reversed()))
+            if (usedEdges.Contains(key))
             {
                 double midLat = (segment[i].Lat + segment[i + 1].Lat) / 2;
                 double midLon = (segment[i].Lon + segment[i + 1].Lon) / 2;
@@ -447,7 +457,7 @@ public static class RouteGeometryUtils
 
             var key = new EdgeKey(segment[i], segment[i + 1]);
 
-            if (usedEdges.Contains(key) || usedEdges.Contains(key.Reversed()))
+            if (usedEdges.Contains(key))
                 overlapDistance += edgeDist;
         }
 
@@ -469,7 +479,7 @@ public static class RouteGeometryUtils
 
             var key = new EdgeKey(segment[i], segment[i + 1]);
 
-            if (usedEdges.Contains(key) || usedEdges.Contains(key.Reversed()))
+            if (usedEdges.Contains(key))
             {
                 overlapDistance += edgeDist;
                 overlappingEdges.Add(key);
@@ -501,8 +511,6 @@ public static class RouteGeometryUtils
 
             if (edgeAge.TryGetValue(key, out int fwdAge))
                 age = Math.Min(age, fwdAge);
-            if (edgeAge.TryGetValue(key.Reversed(), out int revAge))
-                age = Math.Min(age, revAge);
 
             if (age < int.MaxValue)
             {
@@ -536,8 +544,6 @@ public static class RouteGeometryUtils
 
             if (edgeBirthSegment.TryGetValue(key, out int birthFwd))
                 age = Math.Min(age, currentSegment - birthFwd);
-            if (edgeBirthSegment.TryGetValue(key.Reversed(), out int birthRev))
-                age = Math.Min(age, currentSegment - birthRev);
 
             if (age < int.MaxValue)
             {
@@ -1061,9 +1067,8 @@ public static class RouteGeometryUtils
         for (int i = 0; i < fullRoute.Count - 1; i++)
         {
             var key = new EdgeKey(fullRoute[i], fullRoute[i + 1]);
-            var revKey = key.Reversed();
 
-            if (seenEdges.ContainsKey(key) || seenEdges.ContainsKey(revKey))
+            if (seenEdges.ContainsKey(key))
                 segments.Add((fullRoute[i], fullRoute[i + 1]));
             else
                 seenEdges[key] = fullRoute[i];
@@ -1077,7 +1082,6 @@ public static class RouteGeometryUtils
             {
                 var key = new EdgeKey(fullRoute[i], fullRoute[i + 1]);
                 outboundEdges.Add(key);
-                outboundEdges.Add(key.Reversed());
             }
 
             for (int i = outAndBackIndex; i < fullRoute.Count - 1; i++)
@@ -1114,10 +1118,8 @@ public static class RouteGeometryUtils
         for (int i = 0; i < outbound.Count - 1; i++)
         {
             var key = new EdgeKey(outbound[i], outbound[i + 1]);
-            var revKey = key.Reversed();
             double dist = HaversineDistance(outbound[i], outbound[i + 1]);
             outboundEdges[key] = dist;
-            outboundEdges[revKey] = dist;
         }
 
         double overlapDist = 0;
@@ -1293,8 +1295,7 @@ public static class RouteGeometryUtils
             double dist = HaversineDistance(returnSegment[i], returnSegment[i + 1]);
             totalM += dist;
             var key = MakeEdgeKey(returnSegment[i], returnSegment[i + 1]);
-            var revKey = key.Reversed();
-            if (forwardEdges.Contains(key) || forwardEdges.Contains(revKey))
+            if (forwardEdges.Contains(key))
                 overlapM += dist;
         }
 

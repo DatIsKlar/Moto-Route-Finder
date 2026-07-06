@@ -110,10 +110,16 @@ public class RouterDbPool : IDisposable
     public void Checkin(MapRepository repo)
     {
         if (repo == null) return;
-        Interlocked.Decrement(ref _checkedOut);
-        if (!_disposed)
+        var newCount = Interlocked.Decrement(ref _checkedOut);
+        if (_disposed)
+        {
+            repo.ClearMaps();
+        }
+        else
+        {
             _pool.Enqueue(repo);
-        _semaphore.Release();
+            _semaphore.Release();
+        }
     }
 
     /// <summary>

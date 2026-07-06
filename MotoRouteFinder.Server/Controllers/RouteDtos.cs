@@ -61,5 +61,4 @@ public class TestRunRequest
     [Required] public RouteRequest RouteRequest { get; set; } = new();
     [Range(1, 100)] public int TestCount { get; set; } = 5;
     [Range(1, 8)] public int CandidateCount { get; set; } = 4;
-    public bool VerboseDiagnostics { get; set; } = true;
 }

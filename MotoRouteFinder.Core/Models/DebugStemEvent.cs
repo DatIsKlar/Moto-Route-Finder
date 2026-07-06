@@ -4,8 +4,6 @@ namespace MotoRouteFinder.Models;
 
 public record DebugStemEvent
 {
-    public static bool VerboseDiagnostics { get; set; } = true;
-
     public int AttemptNumber { get; set; }
     public string SegmentRole { get; set; } = "";
     public int SegmentIndex { get; set; }

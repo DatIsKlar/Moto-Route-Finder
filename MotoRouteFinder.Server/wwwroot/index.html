@@ -48,7 +48,7 @@
         </div>
 
         <div class="sidebar" id="sidebar">
-            <div class="status-bar" id="statusBar">Click on the map to set start point</div>
+            <div class="status-bar" id="statusBar"><span id="statusSpinner" class="spinner" style="display:none"></span> <span id="statusText">Click on the map to set start point</span></div>
 
             <div class="mode-toggle" id="modeToggle">
                 <button class="mode-btn active" data-mode="generate">Generate</button>
@@ -72,7 +72,7 @@
                     <button id="btnRemoveLast" class="btn btn-small btn-red">Remove Last</button>
                 </div>
                 <div id="pointsList"></div>
-                <div class="hint">Click map to add points</div>
+                <div class="hint">Click map to set start point — routes loop automatically</div>
             </div>
 
             <div class="section">

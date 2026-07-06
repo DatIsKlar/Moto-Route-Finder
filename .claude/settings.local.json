@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir -R)",
+      "Bash(xargs grep -l \"CumulativeEdgeAvoidance\\\\|EdgeBlocker\")",
+      "Bash(xargs grep -l \"CalculateSegmentOverlap\")",
+      "Bash(grep -n \"ResolveForwardEdgeIds\\\\b\" -A 40 \"/c/Users/Aaron/Desktop/Moto Route Finder/csharp-dotnet10-web b2/MotoRouteFinder.Core/Services/AlternativePathFinder.cs\" | head -50)",
+      "Bash(grep -n \"private List<uint> ResolveForwardEdgeIds\" \"/c/Users/Aaron/Desktop/Moto Route Finder/csharp-dotnet10-web b2/MotoRouteFinder.Core/Services/AlternativePathFinder.cs\" \"/c/Users/Aaron/Desktop/Moto Route Finder/csharp-dotnet10-web b3/MotoRouteFinder.Core/Services/AlternativePathFinder.cs\" \"/c/Users/Aaron/Desktop/Moto Route Finder/csharp-dotnet10-web/MotoRouteFinder.Core/Services/AlternativePathFinder.cs\")",
+      "Bash(sed -n '696,742p' \"/c/Users/Aaron/Desktop/Moto Route Finder/csharp-dotnet10-web b2/MotoRouteFinder.Core/Services/AlternativePathFinder.cs\")",
+      "Bash(sed -n '747,793p' \"/c/Users/Aaron/Desktop/Moto Route Finder/csharp-dotnet10-web b3/MotoRouteFinder.Core/Services/AlternativePathFinder.cs\")",
+      "Bash(sed -n '749,795p' \"/c/Users/Aaron/Desktop/Moto Route Finder/csharp-dotnet10-web/MotoRouteFinder.Core/Services/AlternativePathFinder.cs\")",
+      "Read(//tmp/**)",
+      "Bash(dotnet build *)",
+      "Bash(find / -maxdepth 6 -iname \"*56*\" -type d 2>/dev/null | grep -i -E \"diagnostic|test|stem|route\" | head -20)"
+    ]
+  }
+}

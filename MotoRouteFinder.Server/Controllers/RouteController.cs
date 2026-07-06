@@ -71,9 +71,9 @@ public class RouteController : ControllerBase
 
     private async Task<IActionResult> LoadMapByPath(string path, bool avoidHighways, bool addToSaved = false)
     {
-        // H1: Constrain path to the maps root directory
-        if (!IsPathAllowed(path))
-            return ErrorResponse("Access denied: path is outside the maps directory", status: 403);
+        // Loading is restricted to map file types (allowlist), but not confined to MAPS_DIR:
+        // this is a single-user tool that loads the user's own maps from arbitrary paths.
+        // Directory browsing (/maps/browse) stays confined — see IsPathAllowed usage there.
         if (!IsMapExtension(path))
             return ErrorResponse("Access denied: file is not a supported map format", status: 403);
 
@@ -97,7 +97,7 @@ public class RouteController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to load map from {Path}", path);
-            return ErrorResponse(ex.Message);
+            return ErrorResponse("Failed to load map. Check that the file exists and is a valid map format.");
         }
     }
 
@@ -176,7 +176,7 @@ public class RouteController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to load maps");
-            return ErrorResponse(ex.Message);
+            return ErrorResponse("Failed to load maps. Check that the files exist and are valid map formats.");
         }
     }
 
@@ -238,7 +238,7 @@ public class RouteController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to load uploaded maps");
-            return ErrorResponse(ex.Message);
+            return ErrorResponse("Failed to load uploaded map. The file may be corrupted or in an unsupported format.");
         }
     }
 
@@ -253,10 +253,9 @@ public class RouteController : ControllerBase
                 ? mapsRoot
                 : path;
 
-            // H1: Constrain to maps root directory
+            // H1: Directory browsing stays confined to the maps root (enumeration is the real recon vector)
             targetPath = Path.GetFullPath(targetPath);
-            var rootWithSep = mapsRoot.EndsWith(Path.DirectorySeparatorChar) ? mapsRoot : mapsRoot + Path.DirectorySeparatorChar;
-            if (targetPath != mapsRoot && !targetPath.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase))
+            if (!IsPathAllowed(targetPath))
                 return ErrorResponse("Access denied: path is outside the maps directory", status: 403);
 
             if (!Directory.Exists(targetPath))
@@ -312,7 +311,7 @@ public class RouteController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to browse directory");
-            return ErrorResponse(ex.Message);
+            return ErrorResponse("Failed to browse directory.");
         }
     }
 
@@ -361,9 +360,7 @@ public class RouteController : ControllerBase
         if (string.IsNullOrEmpty(request.Path))
             return ErrorResponse("No path provided");
 
-        // H1: Constrain path to maps root
-        if (!IsPathAllowed(request.Path))
-            return ErrorResponse("Access denied: path is outside the maps directory", status: 403);
+        // Allowlist map file types, but do not confine to MAPS_DIR (user's own maps live anywhere).
         if (!IsMapExtension(request.Path))
             return ErrorResponse("Access denied: file is not a supported map format", status: 403);
 
@@ -377,6 +374,11 @@ public class RouteController : ControllerBase
     [HttpDelete("maps/saved")]
     public IActionResult RemoveSavedMap([FromQuery] string path)
     {
+        if (string.IsNullOrEmpty(path))
+            return ErrorResponse("No path provided");
+
+        // Removing a saved-map list entry only edits saved_maps.json — it deletes no files,
+        // so path confinement is unnecessary here and would block cleanup of stale out-of-root entries.
         _savedMapsService.RemoveFromSavedMaps(path);
         return Ok(new { status = "removed" });
     }
@@ -391,12 +393,16 @@ public class RouteController : ControllerBase
     }
 
     [HttpPost("routes/generate")]
-    public async Task<IActionResult> GenerateRoute([FromBody] RouteRequest request)
+    public async Task<IActionResult> GenerateRoute([FromBody] RouteRequest request, CancellationToken cancellationToken)
     {
         try
         {
-            var route = await _routingService.GenerateLoopRouteAsync(request);
+            var route = await _routingService.GenerateLoopRouteAsync(request, cancellationToken);
             return Ok(route);
+        }
+        catch (OperationCanceledException)
+        {
+            return Ok(new { status = "cancelled" });
         }
         catch (Exception ex)
         {
@@ -406,7 +412,7 @@ public class RouteController : ControllerBase
     }
 
     [HttpPost("routes/generate-candidates")]
-    public async Task<IActionResult> GenerateRouteCandidates([FromBody] GenerateCandidatesRequest request)
+    public async Task<IActionResult> GenerateRouteCandidates([FromBody] GenerateCandidatesRequest request, CancellationToken cancellationToken)
     {
         try
         {
@@ -420,12 +426,9 @@ public class RouteController : ControllerBase
 
             // Ensure singleton is loaded before creating pool (prevents pool/singleton divergence)
             await _routingService.EnsureMapLoadedAsync();
-            var pool = _routingService.EnsurePool(poolSize);
 
-            _routingService.TouchIdleTimer();
-
-            var (best, allCandidates) = RoutingService.GenerateLoopRouteCandidates(
-                request.RouteRequest, pool, poolSize, _options);
+            var (best, allCandidates) = await _routingService.GenerateCandidatesAsync(
+                request.RouteRequest, poolSize, _options, cancellationToken);
 
             return Ok(new
             {
@@ -433,6 +436,10 @@ public class RouteController : ControllerBase
                 candidates = allCandidates,
                 candidateCount = allCandidates.Length
             });
+        }
+        catch (OperationCanceledException)
+        {
+            return Ok(new { status = "cancelled" });
         }
         catch (Exception ex)
         {
@@ -519,7 +526,7 @@ public class RouteController : ControllerBase
     }
 
     [HttpPost("routes/test-run")]
-    public async Task<IActionResult> RunTest([FromBody] TestRunRequest request)
+    public async Task<IActionResult> RunTest([FromBody] TestRunRequest request, CancellationToken cancellationToken)
     {
         if (!IsDebugEndpointsEnabled())
             return NotFound();
@@ -533,12 +540,8 @@ public class RouteController : ControllerBase
             var testCount = request.TestCount > 0 ? request.TestCount : 5;
             var candidateCount = request.CandidateCount > 0 ? request.CandidateCount : 4;
 
-            DebugStemEvent.VerboseDiagnostics = request.VerboseDiagnostics;
-
             // Ensure singleton is loaded before creating pool (prevents pool/singleton divergence)
             await _routingService.EnsureMapLoadedAsync();
-            var pool = _routingService.EnsurePool(candidateCount);
-            _routingService.TouchIdleTimer();
 
             var testRunDir = Path.Combine(
                 Environment.GetEnvironmentVariable("MAPS_DIR") ?? AppContext.BaseDirectory,
@@ -557,6 +560,8 @@ public class RouteController : ControllerBase
 
             for (int i = 0; i < testCount; i++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 double targetDist = GenerateRandomDistance(previousDistanceKm);
                 previousDistanceKm = targetDist;
 
@@ -574,15 +579,15 @@ public class RouteController : ControllerBase
                     Direction = bias,
                 };
 
-                var (best, candidates) = RoutingService.GenerateLoopRouteCandidates(
-                    testRequest, pool, candidateCount, _options);
+                var (best, candidates) = await _routingService.GenerateCandidatesAsync(
+                    testRequest, candidateCount, _options, cancellationToken);
 
                 for (int c = 0; c < candidates.Length; c++)
                 {
                     if (candidates[c]?.StemDiagnosticsJson != null)
                     {
                         var diagPath = Path.Combine(testRunDir, $"diagnostics_{i + 1:D3}_c{c}.json");
-                        await System.IO.File.WriteAllTextAsync(diagPath, candidates[c]!.StemDiagnosticsJson);
+                        await System.IO.File.WriteAllTextAsync(diagPath, candidates[c]!.StemDiagnosticsJson, cancellationToken);
                     }
                 }
 
@@ -619,6 +624,10 @@ public class RouteController : ControllerBase
                 avgQuality = Math.Round(avgQuality, 1),
                 routes = results
             });
+        }
+        catch (OperationCanceledException)
+        {
+            return Ok(new { status = "cancelled" });
         }
         catch (Exception ex)
         {

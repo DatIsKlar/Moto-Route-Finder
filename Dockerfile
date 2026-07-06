@@ -11,11 +11,17 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0-preview
 WORKDIR /app
 COPY --from=build /app/publish .
 
+RUN addgroup --system --gid 1001 appgroup && \
+    adduser --system --uid 1001 --ingroup appgroup appuser
+
 ENV MAPS_DIR=/data/maps
 ENV HOST=0.0.0.0
-RUN mkdir -p /data/maps
+RUN mkdir -p /data/maps && chown appuser:appgroup /data/maps
 
 VOLUME ["/data/maps"]
 
 EXPOSE 5000
+USER appuser
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- http://localhost:5000/api/route/health || exit 1
 ENTRYPOINT ["dotnet", "MotoRouteFinder.Server.dll"]

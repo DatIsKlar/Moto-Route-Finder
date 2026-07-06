@@ -144,7 +144,6 @@ public class RouteStatistics
         for (int i = 0; i < fullRoute.Count - 1; i++)
         {
             var key = RouteGeometryUtils.MakeEdgeKey(fullRoute[i], fullRoute[i + 1]);
-            var revKey = key.Reversed();
             double dist = RouteGeometryUtils.HaversineDistance(fullRoute[i], fullRoute[i + 1]);
             totalDistance += dist;
 
@@ -153,13 +152,6 @@ public class RouteStatistics
                 double weight = existingDist >= dist * 2 ? 3.0 : 1.0;
                 edgeOverlap += dist * weight;
                 edgeCounts[key] = existingDist + dist;
-                creditedIndices.Add(i);
-            }
-            else if (edgeCounts.TryGetValue(revKey, out existingDist))
-            {
-                double weight = existingDist >= dist * 2 ? 3.0 : 1.0;
-                edgeOverlap += dist * weight;
-                edgeCounts[revKey] = existingDist + dist;
                 creditedIndices.Add(i);
             }
             else

@@ -11,9 +11,13 @@ const MotoApp = {
 
     async apiFetch(url, options = {}) {
         const res = await fetch(url, options);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.details || data.detail || data.error || JSON.stringify(data.errors || data));
-        return data;
+        if (!res.ok) {
+            const text = await res.text();
+            let detail = text;
+            try { const json = JSON.parse(text); detail = json.details || json.detail || json.error || text; } catch { }
+            throw new Error(`HTTP ${res.status}: ${detail}`);
+        }
+        return await res.json();
     },
 
     refreshPointsUI() {
@@ -34,13 +38,49 @@ const MotoApp = {
     init() {
         MotoMap.init();
         this.bindEvents();
+        this.restorePreferences();
         this.updateTestFileCount();
         this.loadSavedMaps();
         this.startHeartbeat();
         window.addEventListener('beforeunload', () => {
-            navigator.sendBeacon('/api/route/maps/unload');
             this.stopHeartbeat();
         });
+    },
+
+    savePreferences() {
+        const prefs = {
+            targetDistance: document.getElementById('targetDistance').value,
+            targetDuration: document.getElementById('targetDuration').value,
+            waypointCount: document.getElementById('waypointCount').value,
+            candidatesPerRoute: document.getElementById('candidatesPerRoute').value,
+            routeName: document.getElementById('routeName').value,
+            avoidHighways: document.getElementById('avoidHighways').checked,
+            darkMode: document.getElementById('darkMode')?.checked ?? false,
+            directionBias: document.getElementById('directionBias')?.value ?? 'Any',
+        };
+        try { localStorage.setItem('moto-prefs', JSON.stringify(prefs)); } catch { }
+    },
+
+    restorePreferences() {
+        try {
+            const raw = localStorage.getItem('moto-prefs');
+            if (!raw) return;
+            const prefs = JSON.parse(raw);
+            if (prefs.targetDistance) document.getElementById('targetDistance').value = prefs.targetDistance;
+            if (prefs.targetDuration) document.getElementById('targetDuration').value = prefs.targetDuration;
+            if (prefs.waypointCount) document.getElementById('waypointCount').value = prefs.waypointCount;
+            if (prefs.candidatesPerRoute) document.getElementById('candidatesPerRoute').value = prefs.candidatesPerRoute;
+            if (prefs.routeName) document.getElementById('routeName').value = prefs.routeName;
+            if (prefs.avoidHighways !== undefined) document.getElementById('avoidHighways').checked = prefs.avoidHighways;
+            if (prefs.darkMode) {
+                document.getElementById('darkMode').checked = true;
+                MotoMap.toggleDarkMode(true);
+            }
+            if (prefs.directionBias) {
+                const dirEl = document.getElementById('directionBias');
+                if (dirEl) dirEl.value = prefs.directionBias;
+            }
+        } catch { }
     },
 
     bindEvents() {
@@ -91,7 +131,16 @@ const MotoApp = {
 
         document.getElementById('darkMode').addEventListener('change', (e) => {
             MotoMap.toggleDarkMode(e.target.checked);
+            this.savePreferences();
         });
+
+        ['targetDistance', 'targetDuration', 'waypointCount', 'candidatesPerRoute', 'routeName', 'avoidHighways'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', () => this.savePreferences());
+        });
+
+        const dirEl = document.getElementById('directionBias');
+        if (dirEl) dirEl.addEventListener('change', () => this.savePreferences());
 
         document.addEventListener('keydown', (e) => {
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -101,7 +150,11 @@ const MotoApp = {
                     if (!this.isGenerating && !this.isTestRunning) this.generateRoute();
                     break;
                 case 'escape':
-                    if (this.isGenerating || this.isTestRunning) this.cancelGeneration();
+                    if (this.isGenerating || this.isTestRunning) {
+                        this.cancelGeneration();
+                    } else if (document.getElementById('browseModal').style.display !== 'none') {
+                        this.closeBrowse();
+                    }
                     break;
                 case 'delete':
                 case 'backspace':
@@ -114,8 +167,13 @@ const MotoApp = {
         });
     },
 
-    setStatus(msg) {
-        document.getElementById('statusBar').textContent = msg;
+    setStatus(msg, { busy = false, isError = false } = {}) {
+        const spinner = document.getElementById('statusSpinner');
+        const text = document.getElementById('statusText');
+        spinner.style.display = busy ? '' : 'none';
+        text.textContent = msg;
+        const bar = document.getElementById('statusBar');
+        bar.classList.toggle('error', isError);
     },
 
     setMode(mode) {
@@ -202,7 +260,13 @@ const MotoApp = {
     updateStats(stats) {
         if (!stats) {
             document.getElementById('statsSection').style.display = 'none';
+            document.getElementById('statDistance').textContent = '--';
+            document.getElementById('statDuration').textContent = '--';
             document.getElementById('statArrival').textContent = '--';
+            document.getElementById('statRepetition').textContent = '--';
+            document.getElementById('statRepetition').style.color = '';
+            document.getElementById('roadTypesSection').style.display = 'none';
+            document.getElementById('roadTypesList').innerHTML = '';
             return;
         }
 
@@ -391,10 +455,11 @@ const MotoApp = {
         this.setStatus(`Loading map: ${filePath}...`);
 
         try {
+            const avoidHw = document.getElementById('avoidHighways')?.checked ?? true;
             const data = await this.apiFetch('/api/route/maps/load-server', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ serverPath: filePath, avoidHighways: true })
+                body: JSON.stringify({ serverPath: filePath, avoidHighways: avoidHw })
             });
 
             this.showLoadedMaps(data.loadedMaps);
@@ -448,10 +513,11 @@ const MotoApp = {
     async loadSavedMap(path) {
         this.setStatus(`Loading: ${path}...`);
         try {
+            const avoidHw = document.getElementById('avoidHighways')?.checked ?? true;
             const data = await this.apiFetch('/api/route/maps/saved/load', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: path, avoidHighways: true })
+                body: JSON.stringify({ path: path, avoidHighways: avoidHw })
             });
 
             this.showLoadedMaps(data.loadedMaps);
@@ -538,7 +604,7 @@ const MotoApp = {
         document.getElementById('btnGenerate').style.display = 'none';
         document.getElementById('btnCancel').style.display = '';
         document.getElementById('loadingOverlay').style.display = 'flex';
-        this.setStatus(`<span class="spinner"></span>Generating route (${candidatesCount} candidates)...`);
+        this.setStatus(`Generating route (${candidatesCount} candidates)...`, { busy: true });
 
         try {
             const data = await this.apiFetch('/api/route/routes/generate-candidates', {
@@ -575,7 +641,9 @@ const MotoApp = {
             }
         } catch (err) {
             if (err.name !== 'AbortError') {
-                this.setStatus(`Error: ${err.message}`);
+                this.setStatus(err.message, { isError: true });
+            } else {
+                this.setStatus('Generation cancelled');
             }
         } finally {
             this.isGenerating = false;
@@ -602,6 +670,7 @@ const MotoApp = {
 
         const progressEl = document.getElementById('testProgress');
         progressEl.innerHTML = `<span class="spinner"></span> Running ${testCount} routes x ${candidatesCount} candidates...`;
+        this.setStatus(`Running ${testCount} routes x ${candidatesCount} candidates...`, { busy: true });
 
         try {
             const data = await this.apiFetch('/api/route/routes/test-run', {
@@ -628,7 +697,10 @@ const MotoApp = {
         } catch (err) {
             if (err.name !== 'AbortError') {
                 progressEl.innerHTML = `<div class="test-summary" style="color:#ef4444">Error: ${err.message}</div>`;
-                this.setStatus(`Test error: ${err.message}`);
+                this.setStatus(err.message, { isError: true });
+            } else {
+                progressEl.innerHTML = `<div class="test-summary">Test cancelled</div>`;
+                this.setStatus('Test cancelled');
             }
         } finally {
             this.isTestRunning = false;
@@ -647,7 +719,10 @@ const MotoApp = {
     },
 
     async exportGoogleMaps() {
-        if (!this.currentRoute) return;
+        if (!this.currentRoute) {
+            this.setStatus('No route generated yet', { isError: true });
+            return;
+        }
 
         try {
             const data = await this.apiFetch('/api/route/export/google-maps', {
@@ -666,7 +741,10 @@ const MotoApp = {
     },
 
     async exportGpx() {
-        if (!this.currentRoute) return;
+        if (!this.currentRoute) {
+            this.setStatus('No route generated yet', { isError: true });
+            return;
+        }
 
         try {
             const res = await fetch('/api/route/export/gpx/download', {

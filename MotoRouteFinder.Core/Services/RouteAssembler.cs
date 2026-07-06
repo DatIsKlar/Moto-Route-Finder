@@ -23,6 +23,7 @@ public class RouteAssembler
     // A shared cache would silently return a pre-penalty result. See AlternativePathFinder.RouteSingleSegment
     // for the dedicated, deliberately-uncached method used for exactly this reason.
     private readonly Dictionary<(double, double, double, double), List<Coordinate>> _routingCache = new();
+    private readonly Queue<(double, double, double, double)> _routingCacheOrder = new();
     private int _cacheHits;
 
     // Per-route counters (reset at start of each route generation)
@@ -60,6 +61,7 @@ public class RouteAssembler
         _perRouteRoutingCount = 0;
         _perRouteWastedCalls = 0;
         _routingCache.Clear();
+        _routingCacheOrder.Clear();
     }
 
     // See _routingCache field comment for cache-safety constraints.
@@ -92,9 +94,18 @@ public class RouteAssembler
                 _perRouteWastedCalls++;
             if (result != null && result.Count > 0)
             {
-                // Cap cache size to prevent unbounded growth
+                // Evict oldest half when cache is full
                 if (_routingCache.Count >= MaxRoutingCacheSize)
-                    _routingCache.Clear();
+                {
+                    int evict = MaxRoutingCacheSize / 2;
+                    for (int j = 0; j < evict && _routingCacheOrder.Count > 0; j++)
+                    {
+                        var oldKey = _routingCacheOrder.Dequeue();
+                        _routingCache.Remove(oldKey);
+                    }
+                }
+                if (!_routingCache.ContainsKey(key))
+                    _routingCacheOrder.Enqueue(key);
                 _routingCache[key] = result;
             }
             return result;

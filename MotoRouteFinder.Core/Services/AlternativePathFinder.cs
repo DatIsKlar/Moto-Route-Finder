@@ -913,7 +913,7 @@ public class AlternativePathFinder
         for (int i = 0; i < path.Count - 1; i++)
         {
             var edgeKey = RouteGeometryUtils.MakeEdgeKey(path[i], path[i + 1]);
-            bool isOverlapping = forwardEdges.Contains(edgeKey) || forwardEdges.Contains(edgeKey.Reversed());
+            bool isOverlapping = forwardEdges.Contains(edgeKey);
 
             if (!isOverlapping)
             {
