@@ -216,8 +216,9 @@ public static class RouteGeometryUtils
             if (cumulative >= halfDist)
             {
                 double ratio = (cumulative - halfDist) / d;
-                double lat = segment[i].Lat + (segment[i + 1].Lat - segment[i].Lat) * ratio;
-                double lon = segment[i].Lon + (segment[i + 1].Lon - segment[i].Lon) * ratio;
+                // Interpolate from segment[i+1] backward (1-ratio from segment[i])
+                double lat = segment[i + 1].Lat + ratio * (segment[i].Lat - segment[i + 1].Lat);
+                double lon = segment[i + 1].Lon + ratio * (segment[i].Lon - segment[i + 1].Lon);
                 return new Coordinate(lat, lon);
             }
         }
@@ -325,8 +326,9 @@ public static class RouteGeometryUtils
             while (accumulated >= intervalM && dist > 0)
             {
                 double t = (accumulated - intervalM) / dist;
-                double lat = geometry[i - 1].Lat + t * (geometry[i].Lat - geometry[i - 1].Lat);
-                double lon = geometry[i - 1].Lon + t * (geometry[i].Lon - geometry[i - 1].Lon);
+                // Interpolate from geometry[i] backward (1-t from geometry[i-1])
+                double lat = geometry[i].Lat + t * (geometry[i - 1].Lat - geometry[i].Lat);
+                double lon = geometry[i].Lon + t * (geometry[i - 1].Lon - geometry[i].Lon);
                 sampled.Add(new Coordinate(lat, lon));
                 accumulated -= intervalM;
             }
@@ -870,19 +872,20 @@ public static class RouteGeometryUtils
         double lineLength = HaversineDistance(lineStart, lineEnd);
         if (lineLength == 0) return HaversineDistance(lineStart, point);
 
-        // Project point onto line and find perpendicular distance
+        // Work entirely in radians with cos-latitude scaling for longitude
         double lat1 = lineStart.Lat * Math.PI / 180;
         double lon1 = lineStart.Lon * Math.PI / 180;
         double lat2 = lineEnd.Lat * Math.PI / 180;
         double lon2 = lineEnd.Lon * Math.PI / 180;
         double lat3 = point.Lat * Math.PI / 180;
         double lon3 = point.Lon * Math.PI / 180;
+        double cosLat = Math.Cos((lat1 + lat2) / 2);
 
-        // Vector from lineStart to lineEnd
-        double dx = (lon2 - lon1) * Math.Cos((lat1 + lat2) / 2);
+        // Vector from lineStart to lineEnd (radians, cos-scaled lon)
+        double dx = (lon2 - lon1) * cosLat;
         double dy = lat2 - lat1;
 
-        // Vector from lineStart to point
+        // Vector from lineStart to point (radians, cos-scaled lon)
         double px = (lon3 - lon1) * Math.Cos((lat1 + lat3) / 2);
         double py = lat3 - lat1;
 
@@ -890,15 +893,12 @@ public static class RouteGeometryUtils
         double t = (px * dx + py * dy) / (dx * dx + dy * dy);
         t = Math.Max(0, Math.Min(1, t)); // Clamp to line segment
 
-        // Closest point on line
-        double closestLat = lat1 + t * dy;
-        double closestLon = lon1 + t * dx;
+        // Residual vector in radians (cos-scaled lon)
+        double residX = px - t * dx;
+        double residY = py - t * dy;
 
-        // Distance from point to closest point on line
-        double distLat = (lat3 - closestLat) * GeoConstants.MetersPerDegreeLat;
-        double distLon = (lon3 - closestLon) * GeoConstants.MetersPerDegreeLat * Math.Max(Math.Cos(closestLat), GeoConstants.MinCosLat);
-
-        return Math.Sqrt(distLat * distLat + distLon * distLon);
+        // Convert radians to meters: multiply by (180/π) to get degrees, then by MetersPerDegreeLat
+        return Math.Sqrt(residX * residX + residY * residY) * (180.0 / Math.PI) * GeoConstants.MetersPerDegreeLat;
     }
 
     /// <summary>
@@ -1108,55 +1108,31 @@ public static class RouteGeometryUtils
         if (returnToStartIndex <= 0 || returnToStartIndex >= fullRoute.Count)
             return 0;
 
-        var outbound = fullRoute.Take(returnToStartIndex).ToList();
-        var returnPath = fullRoute.Skip(returnToStartIndex).ToList();
+        int outboundCount = returnToStartIndex;
+        int returnCount = fullRoute.Count - returnToStartIndex;
 
-        if (outbound.Count < 2 || returnPath.Count < 2)
+        if (outboundCount < 2 || returnCount < 2)
             return 0;
 
         var outboundEdges = new Dictionary<EdgeKey, double>();
-        for (int i = 0; i < outbound.Count - 1; i++)
+        for (int i = 0; i < outboundCount - 1; i++)
         {
-            var key = new EdgeKey(outbound[i], outbound[i + 1]);
-            double dist = HaversineDistance(outbound[i], outbound[i + 1]);
+            var key = new EdgeKey(fullRoute[i], fullRoute[i + 1]);
+            double dist = HaversineDistance(fullRoute[i], fullRoute[i + 1]);
             outboundEdges[key] = dist;
         }
 
         double overlapDist = 0;
-        for (int i = 0; i < returnPath.Count - 1; i++)
+        for (int i = returnToStartIndex; i < fullRoute.Count - 1; i++)
         {
-            var key = new EdgeKey(returnPath[i], returnPath[i + 1]);
-            double dist = HaversineDistance(returnPath[i], returnPath[i + 1]);
+            var key = new EdgeKey(fullRoute[i], fullRoute[i + 1]);
+            double dist = HaversineDistance(fullRoute[i], fullRoute[i + 1]);
 
             if (outboundEdges.ContainsKey(key))
                 overlapDist += dist;
         }
 
         return overlapDist;
-    }
-
-    /// <summary>
-    /// Calculates the distance from a point to the nearest used edge.
-    /// Used for edge avoidance in waypoint generation.
-    /// </summary>
-    public static double DistanceToNearestUsedEdge(Coordinate point, HashSet<EdgeKey> edges)
-    {
-        if (edges.Count == 0) return double.MaxValue;
-
-        double minDist = double.MaxValue;
-
-        foreach (var edge in edges)
-        {
-            double lat1 = edge.Lat1 * GeoConstants.EdgeSnapGridDegrees;
-            double lon1 = edge.Lon1 * GeoConstants.EdgeSnapGridDegrees;
-            double lat2 = edge.Lat2 * GeoConstants.EdgeSnapGridDegrees;
-            double lon2 = edge.Lon2 * GeoConstants.EdgeSnapGridDegrees;
-
-            double dist = DistancePointToSegment(point, lat1, lon1, lat2, lon2);
-            if (dist < minDist) minDist = dist;
-        }
-
-        return minDist;
     }
 
     private static double DistancePointToSegment(Coordinate point, double lat1, double lon1, double lat2, double lon2)
@@ -1269,7 +1245,12 @@ public static class RouteGeometryUtils
             prevBearing = currBearing;
         }
 
-        if (totalMeters > 0) straightMeters += HaversineDistance(points[points.Count - 2], points[points.Count - 1]);
+        double lastSegDist = HaversineDistance(points[points.Count - 2], points[points.Count - 1]);
+        if (totalMeters > 0)
+        {
+            straightMeters += lastSegDist;
+            totalMeters += lastSegDist;
+        }
         double straightRatio = totalMeters > 0 ? straightMeters / totalMeters : 1.0;
         double avgAngle = angleCount > 0 ? totalAngle / angleCount : 0;
 
@@ -1301,17 +1282,6 @@ public static class RouteGeometryUtils
 
         double overlapPct = totalM > 0 ? overlapM / totalM : 0;
         return (Math.Round(curvature, 4), Math.Round(overlapPct, 3));
-    }
-
-    /// <summary>
-    /// Calculates circularity score on a route geometry.
-    /// Higher values indicate more circular routes (covers more compass directions).
-    /// Components: bearing spread (50%), sector coverage (30%), compactness (20%).
-    /// </summary>
-    public static double CalculateCircularityScore(List<Coordinate> geometry, double maxBearingSpread = DefaultMaxBearingSpreadDegrees)
-    {
-        var (total, spread, sector, compactness) = CalculateCircularityScoreWithSubScores(geometry, maxBearingSpread);
-        return total;
     }
 
     /// <summary>
@@ -1427,8 +1397,8 @@ public static class RouteGeometryUtils
 
     /// <summary>
     /// Grid-based spatial index for fast radius queries and nearest-edge lookups.
-    /// Partitions edges into grid cells so CountEdgesInRadius and DistanceToNearestUsedEdge
-    /// only check edges in nearby cells instead of the full set.
+    /// Partitions edges into grid cells so CountEdgesInRadius
+    /// only checks edges in nearby cells instead of the full set.
     /// </summary>
     public class EdgeSpatialIndex
     {

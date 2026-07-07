@@ -147,6 +147,8 @@ public class RouteAssembler
         Coordinate pushCenter = RouteGeometryUtils.FindOverlapCenter(normal, usedEdges) ?? new Coordinate((from.Lat + to.Lat) / 2, (from.Lon + to.Lon) / 2);
         double roadAngle = RouteGeometryUtils.ComputeSegmentDirection(normal, pushCenter);
 
+        double bestDirectness = bestRoute != null ? RouteGeometryUtils.CalculateDirectness(bestRoute) : 1.0;
+
         for (int attempt = 0; attempt < PushAttempts; attempt++)
         {
             double prevBestOverlap = bestOverlap;
@@ -190,12 +192,13 @@ public class RouteAssembler
             double plateauRatio = 1.0 - combinedOverlap; // unique sections ratio
             double compositeScore = 7.0 * combinedOverlap + (-0.2) * plateauRatio + 0.8 * (1.0 - directness);
 
-            double bestCompositeScore = 7.0 * bestOverlap + (-0.2) * (1.0 - bestOverlap) + 0.8 * (1.0 - RouteGeometryUtils.CalculateDirectness(bestRoute!));
+            double bestCompositeScore = 7.0 * bestOverlap + (-0.2) * (1.0 - bestOverlap) + 0.8 * (1.0 - bestDirectness);
 
             if (compositeScore < bestCompositeScore)
             {
                 bestOverlap = combinedOverlap;
                 bestRoute = combined;
+                bestDirectness = directness;
             }
 
             if (bestOverlap <= OverlapThreshold)

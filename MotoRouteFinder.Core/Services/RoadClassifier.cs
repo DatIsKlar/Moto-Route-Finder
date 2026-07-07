@@ -51,6 +51,7 @@ public class RoadClassifier
     {
         ResetStats();
         _resolveCache.Clear();
+        _probeCache.Clear();
     }
 
     /// <summary>
@@ -188,9 +189,12 @@ public class RoadClassifier
         return (RoadQuality.Poor, highway);
     }
 
-    public RoadQuality ClassifyRoad(Coordinate point, IProfileInstance profile, bool avoidHighways = false)
+    /// <summary>
+    /// Shared resolve + classify + cache logic used by both ClassifyRoad and GetHighwayType.
+    /// Returns (quality, highway) from cache or fresh resolution.
+    /// </summary>
+    private (RoadQuality quality, string? highway) ResolveAndClassify(IProfileInstance profile, Coordinate point)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
         int cacheKeyLat = (int)(point.Lat * 1e3);
         int cacheKeyLon = (int)(point.Lon * 1e3);
         var cacheKey = (cacheKeyLat, cacheKeyLon);
@@ -199,11 +203,7 @@ public class RoadClassifier
         if (_resolveCache.TryGetValue(cacheKey, out var cached))
         {
             _resolveCacheHitCount++;
-            sw.Stop();
-            _classificationMs += sw.ElapsedMilliseconds;
-            if (avoidHighways && cached.highway is "motorway" or "motorway_link")
-                return RoadQuality.Blocked;
-            return cached.quality;
+            return cached;
         }
 
         _resolveCacheMissCount++;
@@ -211,30 +211,33 @@ public class RoadClassifier
         if (_mapRepository.Router == null || _mapRepository.RouterDb == null)
         {
             if (canCache) _resolveCache[cacheKey] = (RoadQuality.Blocked, null);
-            return RoadQuality.Blocked;
+            return (RoadQuality.Blocked, null);
         }
 
         var result = _mapRepository.Router.TryResolve(profile, (float)point.Lat, (float)point.Lon, 50);
         if (result.IsError)
         {
             if (canCache) _resolveCache[cacheKey] = (RoadQuality.Blocked, null);
-            return RoadQuality.Blocked;
+            return (RoadQuality.Blocked, null);
         }
 
         var edge = _mapRepository.RouterDb.Network.GetEdge(result.Value.EdgeId);
-
-        // Classify from tags using shared logic
         var tags = _mapRepository.RouterDb.EdgeProfiles.Get(edge.Data.Profile);
         if (tags == null)
         {
             if (canCache) _resolveCache[cacheKey] = (RoadQuality.Poor, null);
-            sw.Stop();
-            _classificationMs += sw.ElapsedMilliseconds;
-            return RoadQuality.Poor;
+            return (RoadQuality.Poor, null);
         }
 
         var (quality, highway) = ClassifyFromTags(tags);
         if (canCache) _resolveCache[cacheKey] = (quality, highway);
+        return (quality, highway);
+    }
+
+    public RoadQuality ClassifyRoad(Coordinate point, IProfileInstance profile, bool avoidHighways = false)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var (quality, highway) = ResolveAndClassify(profile, point);
         sw.Stop();
         _classificationMs += sw.ElapsedMilliseconds;
 
@@ -245,34 +248,7 @@ public class RoadClassifier
 
     public string? GetHighwayType(Coordinate point, IProfileInstance profile)
     {
-        // Use same 1e3 granularity as ClassifyRoad so both share cache entries
-        int cacheKeyLat = (int)(point.Lat * 1e3);
-        int cacheKeyLon = (int)(point.Lon * 1e3);
-        var cacheKey = (cacheKeyLat, cacheKeyLon);
-        bool canCache = _edgeBlocker?.HasActiveBlocks != true;
-
-        if (_resolveCache.TryGetValue(cacheKey, out var cached))
-        {
-            _resolveCacheHitCount++;
-            return cached.highway;
-        }
-
-        _resolveCacheMissCount++;
-        _resolveCount++;
-        if (_mapRepository.Router == null || _mapRepository.RouterDb == null) return null;
-
-        var result = _mapRepository.Router.TryResolve(profile, (float)point.Lat, (float)point.Lon, 50);
-        if (result.IsError)
-        {
-            if (canCache) _resolveCache[cacheKey] = (RoadQuality.Blocked, null);
-            return null;
-        }
-
-        var edge = _mapRepository.RouterDb.Network.GetEdge(result.Value.EdgeId);
-        var tags = _mapRepository.RouterDb.EdgeProfiles.Get(edge.Data.Profile);
-        string? highway = null;
-        tags?.TryGetValue("highway", out highway);
-        if (canCache) _resolveCache[cacheKey] = (RoadQuality.Poor, highway);
+        var (_, highway) = ResolveAndClassify(profile, point);
         return highway;
     }
 

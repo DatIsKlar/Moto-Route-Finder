@@ -10,8 +10,11 @@ namespace MotoRouteFinder.Services;
 /// </summary>
 public class DiagnosticsCollector
 {
+    private static readonly JsonSerializerOptions sIndentedOptions = new() { WriteIndented = true };
     private readonly DiagnosticsOutput _output = new();
     private string? _cachedJson;
+
+    public bool Enabled { get; set; }
 
     public int Count => _output.StemEvents.Count + _output.RouteSummaries.Count + (_output.FinalSummary != null ? 1 : 0);
 
@@ -25,6 +28,7 @@ public class DiagnosticsCollector
 
     public void Add(object item)
     {
+        if (!Enabled) return;
         _cachedJson = null;
         switch (item)
         {
@@ -40,12 +44,13 @@ public class DiagnosticsCollector
         }
     }
 
-    public string ToJson()
+    public string? ToJson()
     {
+        if (!Enabled) return null;
         if (_cachedJson != null) return _cachedJson;
         if (_output.StemEvents.Count == 0 && _output.RouteSummaries.Count == 0 && _output.FinalSummary == null)
             return "[]";
-        _cachedJson = JsonSerializer.Serialize(_output, new JsonSerializerOptions { WriteIndented = true });
+        _cachedJson = JsonSerializer.Serialize(_output, sIndentedOptions);
         return _cachedJson;
     }
 
@@ -69,9 +74,6 @@ public class DiagnosticsCollector
 
     public int CountPrivateRoads() =>
         0;
-
-    public Dictionary<string, int> GetFixFailureByReasonCode() =>
-        new();
 
     public int SumResolveCount() =>
         _output.RouteSummaries.Sum(s => s.ResolveCount);

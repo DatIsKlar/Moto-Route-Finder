@@ -7,6 +7,7 @@ const MotoApp = {
     isTestRunning: false,
     mode: 'generate',
     abortController: null,
+    currentJobId: null,
     heartbeatInterval: null,
 
     async apiFetch(url, options = {}) {
@@ -18,6 +19,28 @@ const MotoApp = {
             throw new Error(`HTTP ${res.status}: ${detail}`);
         }
         return await res.json();
+    },
+
+    async pollJobUntilDone(jobId, signal) {
+        while (true) {
+            if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+            const res = await fetch(`/api/route/routes/status/${jobId}`, { signal });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const job = await res.json();
+            this.updateProgressUI(job.overallProgress, job.message);
+            this.setStatus(job.message || 'Generating...', { busy: true });
+            if (job.status === 'completed') return job.result;
+            if (job.status === 'failed') throw new Error(job.error || 'Generation failed');
+            if (job.status === 'cancelled') throw new DOMException('Cancelled', 'AbortError');
+            await new Promise(r => setTimeout(r, 500));
+        }
+    },
+
+    updateProgressUI(fraction, message) {
+        const pct = Math.round(fraction * 100);
+        document.getElementById('progressBarFill').style.width = `${pct}%`;
+        document.getElementById('progressPercent').textContent = `${pct}%`;
+        document.getElementById('progressStepLabel').textContent = message || 'Starting...';
     },
 
     refreshPointsUI() {
@@ -51,7 +74,6 @@ const MotoApp = {
         const prefs = {
             targetDistance: document.getElementById('targetDistance').value,
             targetDuration: document.getElementById('targetDuration').value,
-            waypointCount: document.getElementById('waypointCount').value,
             candidatesPerRoute: document.getElementById('candidatesPerRoute').value,
             routeName: document.getElementById('routeName').value,
             avoidHighways: document.getElementById('avoidHighways').checked,
@@ -68,7 +90,6 @@ const MotoApp = {
             const prefs = JSON.parse(raw);
             if (prefs.targetDistance) document.getElementById('targetDistance').value = prefs.targetDistance;
             if (prefs.targetDuration) document.getElementById('targetDuration').value = prefs.targetDuration;
-            if (prefs.waypointCount) document.getElementById('waypointCount').value = prefs.waypointCount;
             if (prefs.candidatesPerRoute) document.getElementById('candidatesPerRoute').value = prefs.candidatesPerRoute;
             if (prefs.routeName) document.getElementById('routeName').value = prefs.routeName;
             if (prefs.avoidHighways !== undefined) document.getElementById('avoidHighways').checked = prefs.avoidHighways;
@@ -134,7 +155,7 @@ const MotoApp = {
             this.savePreferences();
         });
 
-        ['targetDistance', 'targetDuration', 'waypointCount', 'candidatesPerRoute', 'routeName', 'avoidHighways'].forEach(id => {
+        ['targetDistance', 'targetDuration', 'candidatesPerRoute', 'routeName', 'avoidHighways'].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.addEventListener('change', () => this.savePreferences());
         });
@@ -587,9 +608,9 @@ const MotoApp = {
             targetDistanceKm: dist > 0 ? dist : null,
             targetDurationMin: dur > 0 ? dur : null,
             avoidHighways: document.getElementById('avoidHighways').checked,
-            waypointCount: parseInt(document.getElementById('waypointCount').value) || 6,
             direction: document.getElementById('directionBias').value,
-            routeName: document.getElementById('routeName').value || 'Moto Route'
+            routeName: document.getElementById('routeName').value || 'Moto Route',
+            collectDiagnostics: document.getElementById('saveDiagnostics')?.checked ?? false
         };
     },
 
@@ -604,15 +625,20 @@ const MotoApp = {
         document.getElementById('btnGenerate').style.display = 'none';
         document.getElementById('btnCancel').style.display = '';
         document.getElementById('loadingOverlay').style.display = 'flex';
+        this.updateProgressUI(0, 'Starting...');
         this.setStatus(`Generating route (${candidatesCount} candidates)...`, { busy: true });
 
         try {
-            const data = await this.apiFetch('/api/route/routes/generate-candidates', {
+            const startRes = await this.apiFetch('/api/route/routes/generate-candidates/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ routeRequest: request, candidateCount: candidatesCount }),
                 signal: this.abortController.signal
             });
+
+            this.currentJobId = startRes.jobId;
+            const data = await this.pollJobUntilDone(startRes.jobId, this.abortController.signal);
+            this.currentJobId = null;
 
             this.currentRoute = data.best;
             this.currentStats = data.best.stats;
@@ -647,6 +673,7 @@ const MotoApp = {
             }
         } finally {
             this.isGenerating = false;
+            this.currentJobId = null;
             document.getElementById('btnGenerate').style.display = '';
             document.getElementById('btnCancel').style.display = 'none';
             document.getElementById('loadingOverlay').style.display = 'none';
@@ -667,18 +694,23 @@ const MotoApp = {
         document.getElementById('btnCancelTest').style.display = '';
         document.getElementById('testProgress').style.display = '';
         document.getElementById('loadingOverlay').style.display = 'flex';
+        this.updateProgressUI(0, 'Starting test run...');
 
         const progressEl = document.getElementById('testProgress');
         progressEl.innerHTML = `<span class="spinner"></span> Running ${testCount} routes x ${candidatesCount} candidates...`;
         this.setStatus(`Running ${testCount} routes x ${candidatesCount} candidates...`, { busy: true });
 
         try {
-            const data = await this.apiFetch('/api/route/routes/test-run', {
+            const startRes = await this.apiFetch('/api/route/routes/test-run/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ routeRequest: request, testCount, candidateCount: candidatesCount }),
                 signal: this.abortController.signal
             });
+
+            this.currentJobId = startRes.jobId;
+            const data = await this.pollJobUntilDone(startRes.jobId, this.abortController.signal);
+            this.currentJobId = null;
 
             let html = `<div class="test-summary">Test complete: ${data.totalRoutes} routes x ${data.candidatesPerRoute} candidates = ${data.totalFiles} files | Avg quality: ${data.avgQuality}</div>`;
             html += `<div class="test-summary">Saved to: ${data.testRunDir}</div>`;
@@ -704,6 +736,7 @@ const MotoApp = {
             }
         } finally {
             this.isTestRunning = false;
+            this.currentJobId = null;
             document.getElementById('btnRunTest').style.display = '';
             document.getElementById('btnCancelTest').style.display = 'none';
             document.getElementById('loadingOverlay').style.display = 'none';
@@ -712,10 +745,14 @@ const MotoApp = {
     },
 
     cancelGeneration() {
+        if (this.currentJobId) {
+            fetch(`/api/route/routes/cancel/${this.currentJobId}`, { method: 'POST' }).catch(() => {});
+        }
         if (this.abortController) {
             this.abortController.abort();
             this.abortController = null;
         }
+        this.currentJobId = null;
     },
 
     async exportGoogleMaps() {

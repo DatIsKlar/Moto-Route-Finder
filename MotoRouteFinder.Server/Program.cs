@@ -38,6 +38,7 @@ builder.Services.AddSingleton<RoutingService>(sp =>
         sp.GetRequiredService<ILogger<RoutingService>>()));
 builder.Services.AddSingleton<SavedMapsService>();
 builder.Services.AddSingleton<ExportService>();
+builder.Services.AddSingleton<JobProgressStore>();
 
 var app = builder.Build();
 

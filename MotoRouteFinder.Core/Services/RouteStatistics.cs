@@ -46,20 +46,25 @@ public class RouteStatistics
         };
         var sampledPoints = RouteGeometryUtils.SampleAlongGeometry(fullRoute, SampleIntervalM);
 
+        // Single pass: road quality, road type distances, and transitions
+        int transitions = 0;
+        string? lastType = null;
         foreach (var point in sampledPoints)
         {
-            // ClassifyRoad resolves edge and caches highway type — call first
             var quality = _roadClassifier.ClassifyRoad(point, profile);
             string qualityKey = quality.ToString();
             roadQualityDistances[qualityKey] += SampleIntervalM;
 
-            // GetHighwayType hits cache from ClassifyRoad — no additional TryResolve
             var highway = _roadClassifier.GetHighwayType(point, profile);
             if (highway != null)
             {
                 if (!roadTypeDistances.ContainsKey(highway))
                     roadTypeDistances[highway] = 0;
                 roadTypeDistances[highway] += SampleIntervalM;
+
+                if (lastType != null && highway != lastType)
+                    transitions++;
+                lastType = highway;
             }
         }
 
@@ -89,18 +94,6 @@ public class RouteStatistics
 
         // Phase 2: Turning analysis
         var (turns, sharp, hairpins, avgAngle, straightRatio) = RouteGeometryUtils.AnalyzeTurns(fullRoute);
-
-        // Phase 3: Road type transitions
-        int transitions = 0;
-        string? lastType = null;
-        foreach (var point in sampledPoints)
-        {
-            string? type = _roadClassifier.GetHighwayType(point, profile);
-            if (type != null && lastType != null && type != lastType)
-                transitions++;
-            if (type != null)
-                lastType = type;
-        }
 
         return new RouteStats
         {

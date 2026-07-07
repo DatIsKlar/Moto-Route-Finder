@@ -21,16 +21,18 @@ public class RouteController : ControllerBase
     private readonly RoutingService _routingService;
     private readonly ExportService _exportService;
     private readonly SavedMapsService _savedMapsService;
+    private readonly JobProgressStore _jobStore;
     private readonly IOptions<RouteGenerationOptions> _options;
     private readonly ILogger<RouteController> _logger;
 
     private const double BytesToMB = 1048576.0;
 
-    public RouteController(RoutingService routingService, ExportService exportService, SavedMapsService savedMapsService, IOptions<RouteGenerationOptions> options, ILogger<RouteController> logger)
+    public RouteController(RoutingService routingService, ExportService exportService, SavedMapsService savedMapsService, JobProgressStore jobStore, IOptions<RouteGenerationOptions> options, ILogger<RouteController> logger)
     {
         _routingService = routingService;
         _exportService = exportService;
         _savedMapsService = savedMapsService;
+        _jobStore = jobStore;
         _options = options;
         _logger = logger;
     }
@@ -448,6 +450,304 @@ public class RouteController : ControllerBase
         }
     }
 
+    [HttpPost("routes/generate-candidates/start")]
+    public IActionResult StartGenerateCandidates([FromBody] GenerateCandidatesRequest request)
+    {
+        try
+        {
+            request.CandidateCount = Math.Clamp(request.CandidateCount, 1, 8);
+
+            var cachePath = _routingService.CachePath;
+            if (string.IsNullOrEmpty(cachePath))
+                return ErrorResponse("No map loaded. Load a map first.");
+
+            var jobId = _jobStore.CreateJob();
+            var cts = _jobStore.TryGet(jobId)!.Cts;
+
+            _ = RunGenerateCandidatesJobAsync(jobId, request, cts);
+
+            return StatusCode(202, new { jobId });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to start route generation job");
+            return ErrorResponse(ex.Message);
+        }
+    }
+
+    [HttpGet("routes/status/{jobId}")]
+    public IActionResult GetJobStatus(string jobId)
+    {
+        var job = _jobStore.TryGet(jobId);
+        if (job == null)
+            return NotFound(new { error = "Job not found or expired" });
+
+        return Ok(new
+        {
+            status = job.Status.ToString().ToLowerInvariant(),
+            overallProgress = job.OverallProgress,
+            message = job.StepMessage,
+            result = job.Result,
+            error = job.Error
+        });
+    }
+
+    [HttpPost("routes/cancel/{jobId}")]
+    public IActionResult CancelJob(string jobId)
+    {
+        var job = _jobStore.TryGet(jobId);
+        if (job == null)
+            return NotFound(new { error = "Job not found or expired" });
+
+        _jobStore.Cancel(jobId);
+        return Ok(new { status = "cancelling" });
+    }
+
+    private async Task RunGenerateCandidatesJobAsync(string jobId, GenerateCandidatesRequest request, CancellationTokenSource cts)
+    {
+        var ct = cts.Token;
+        try
+        {
+            _jobStore.UpdateProgress(jobId, 0, "Loading map...");
+
+            // Subscribe to singleton StatusChanged for map loading phase
+            void OnStatus(string msg) => _jobStore.UpdateProgress(jobId, _jobStore.TryGet(jobId)?.OverallProgress ?? 0, msg);
+            _routingService.StatusChanged += OnStatus;
+
+            try
+            {
+                await _routingService.EnsureMapLoadedAsync();
+            }
+            finally
+            {
+                _routingService.StatusChanged -= OnStatus;
+            }
+
+            _jobStore.UpdateProgress(jobId, 0.10, "Generating candidates...");
+
+            var candidateCount = request.CandidateCount;
+            var candidateFractions = new double[candidateCount];
+            var candidateMessages = new string?[candidateCount];
+
+            var progress = new Progress<(int candidateIndex, int candidateCount, double fraction, string? message)>(p =>
+            {
+                if (p.fraction >= 0)
+                    candidateFractions[p.candidateIndex] = p.fraction;
+                if (p.message != null)
+                    candidateMessages[p.candidateIndex] = p.message;
+
+                var avgFraction = candidateFractions.Average();
+                var overallProgress = 0.10 + 0.85 * avgFraction;
+
+                // Find the most advanced candidate's message
+                string? stepMessage = null;
+                for (int i = candidateCount - 1; i >= 0; i--)
+                {
+                    if (candidateMessages[i] != null)
+                    {
+                        stepMessage = $"Candidate {i + 1}/{candidateCount}: {candidateMessages[i]}";
+                        break;
+                    }
+                }
+
+                _jobStore.UpdateProgress(jobId, overallProgress, stepMessage ?? "Generating...");
+            });
+
+            var poolSize = candidateCount > 0 ? candidateCount : 4;
+            var (best, allCandidates) = await _routingService.GenerateCandidatesAsync(
+                request.RouteRequest, poolSize, _options, ct, progress);
+
+            _jobStore.UpdateProgress(jobId, 1.0, "Complete");
+            _jobStore.Complete(jobId, new { best, candidates = allCandidates, candidateCount = allCandidates.Length });
+        }
+        catch (OperationCanceledException)
+        {
+            _jobStore.Cancel(jobId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Generate candidates job failed");
+            _jobStore.Fail(jobId, ex.Message);
+        }
+    }
+
+    [HttpPost("routes/test-run/start")]
+    public IActionResult StartTestRun([FromBody] TestRunRequest request)
+    {
+        if (!IsDebugEndpointsEnabled())
+            return NotFound();
+
+        try
+        {
+            var cachePath = _routingService.CachePath;
+            if (string.IsNullOrEmpty(cachePath))
+                return ErrorResponse("No map loaded. Load a map first.");
+
+            var jobId = _jobStore.CreateJob();
+            var cts = _jobStore.TryGet(jobId)!.Cts;
+
+            _ = RunTestJobAsync(jobId, request, cts);
+
+            return StatusCode(202, new { jobId });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to start test run job");
+            return ErrorResponse(ex.Message);
+        }
+    }
+
+    private async Task RunTestJobAsync(string jobId, TestRunRequest request, CancellationTokenSource cts)
+    {
+        var ct = cts.Token;
+        try
+        {
+            var testCount = request.TestCount > 0 ? request.TestCount : 5;
+            var candidateCount = request.CandidateCount > 0 ? request.CandidateCount : 4;
+
+            _jobStore.UpdateProgress(jobId, 0, "Loading map...");
+
+            void OnStatus(string msg) => _jobStore.UpdateProgress(jobId, _jobStore.TryGet(jobId)?.OverallProgress ?? 0, msg);
+            _routingService.StatusChanged += OnStatus;
+
+            try
+            {
+                await _routingService.EnsureMapLoadedAsync();
+            }
+            finally
+            {
+                _routingService.StatusChanged -= OnStatus;
+            }
+
+            _jobStore.UpdateProgress(jobId, 0.05, "Starting test run...");
+
+            var testRunDir = Path.Combine(
+                Environment.GetEnvironmentVariable("MAPS_DIR") ?? AppContext.BaseDirectory,
+                "stem_diagnostics", $"test_run_{DateTime.Now:yyyyMMdd_HHmmss}");
+            Directory.CreateDirectory(testRunDir);
+
+            _logger.LogInformation("Test run starting: {Count} routes x {Candidates} candidates -> {Dir}",
+                testCount, candidateCount, testRunDir);
+
+            var results = new List<object>();
+            double? previousDistanceKm = null;
+            double totalQuality = 0;
+            int validCount = 0;
+
+            var routeRequest = request.RouteRequest ?? new RouteRequest();
+
+            for (int i = 0; i < testCount; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var routeProgress = 0.05 + 0.90 * ((double)i / testCount);
+                _jobStore.UpdateProgress(jobId, routeProgress, $"Route {i + 1}/{testCount}...");
+
+                double targetDist = GenerateRandomDistance(previousDistanceKm);
+                previousDistanceKm = targetDist;
+
+                int wpCount = routeRequest.WaypointCount > 0 ? routeRequest.WaypointCount : 5;
+                var bias = AllDirectionBiases[i % AllDirectionBiases.Length];
+
+                var testRequest = new RouteRequest
+                {
+                    Start = routeRequest.Start,
+                    Waypoints = routeRequest.Waypoints,
+                    TargetDistanceKm = targetDist,
+                    TargetDurationMin = null,
+                    AvoidHighways = routeRequest.AvoidHighways,
+                    WaypointCount = wpCount,
+                    Direction = bias,
+                    CollectDiagnostics = true,
+                };
+
+                var candidateFractions = new double[candidateCount];
+                var candidateMessages = new string?[candidateCount];
+
+                var progress = new Progress<(int candidateIndex, int candidateCount, double fraction, string? message)>(p =>
+                {
+                    if (p.fraction >= 0)
+                        candidateFractions[p.candidateIndex] = p.fraction;
+                    if (p.message != null)
+                        candidateMessages[p.candidateIndex] = p.message;
+
+                    var innerAvg = candidateFractions.Average();
+                    var routeFraction = 0.05 + 0.90 * ((double)i / testCount);
+                    var nextRouteFraction = 0.05 + 0.90 * ((double)(i + 1) / testCount);
+                    var overallProgress = routeFraction + (nextRouteFraction - routeFraction) * innerAvg;
+
+                    string? stepMessage = null;
+                    for (int j = candidateCount - 1; j >= 0; j--)
+                    {
+                        if (candidateMessages[j] != null)
+                        {
+                            stepMessage = $"Route {i + 1}/{testCount}, candidate {j + 1}/{candidateCount}: {candidateMessages[j]}";
+                            break;
+                        }
+                    }
+
+                    _jobStore.UpdateProgress(jobId, overallProgress, stepMessage ?? $"Route {i + 1}/{testCount}...");
+                });
+
+                var (best, candidates) = await _routingService.GenerateCandidatesAsync(
+                    testRequest, candidateCount, _options, ct, progress);
+
+                for (int c = 0; c < candidates.Length; c++)
+                {
+                    if (candidates[c]?.StemDiagnosticsJson != null)
+                    {
+                        var diagPath = Path.Combine(testRunDir, $"diagnostics_{i + 1:D3}_c{c}.json");
+                        await System.IO.File.WriteAllTextAsync(diagPath, candidates[c]!.StemDiagnosticsJson, ct);
+                    }
+                }
+
+                var quality = best?.Stats?.QualityScore ?? 0;
+                var distance = best?.Stats?.TotalDistanceKm ?? 0;
+                var repetition = best?.Stats?.RepetitionRatio ?? 0;
+
+                totalQuality += quality;
+                validCount++;
+
+                results.Add(new
+                {
+                    index = i + 1,
+                    qualityScore = Math.Round(quality, 1),
+                    distanceKm = Math.Round(distance, 1),
+                    repetitionPct = Math.Round(repetition * 100, 1),
+                    direction = bias.ToString(),
+                    candidates = candidateCount
+                });
+
+                _logger.LogInformation("Test route {Index}/{Total}: quality={Quality:F1}, distance={Distance:F1}km, repetition={Repetition:P1}",
+                    i + 1, testCount, quality, distance, repetition);
+            }
+
+            _jobStore.UpdateProgress(jobId, 1.0, "Complete");
+
+            var totalFiles = testCount * candidateCount;
+            var avgQuality = validCount > 0 ? totalQuality / validCount : 0;
+
+            _jobStore.Complete(jobId, new
+            {
+                testRunDir,
+                totalRoutes = testCount,
+                candidatesPerRoute = candidateCount,
+                totalFiles,
+                avgQuality = Math.Round(avgQuality, 1),
+                routes = results
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            _jobStore.Cancel(jobId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Test run job failed");
+            _jobStore.Fail(jobId, ex.Message);
+        }
+    }
+
     [HttpPost("export/gpx")]
     public IActionResult ExportGpx([FromBody] ExportGpxRequest request)
     {
@@ -577,6 +877,7 @@ public class RouteController : ControllerBase
                     AvoidHighways = routeRequest.AvoidHighways,
                     WaypointCount = wpCount,
                     Direction = bias,
+                    CollectDiagnostics = true,
                 };
 
                 var (best, candidates) = await _routingService.GenerateCandidatesAsync(

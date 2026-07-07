@@ -123,15 +123,18 @@ public class RouteBuilder
             var (seg, _, _, _, _) = _routeAssembler.RouteSegmentWithCumulativeAvoidance(profile, currentPos, next, allUsedEdges);
             if (seg == null) continue;
 
-            _diagnostics.Add(new DebugStemEvent
+            if (_diagnostics.Enabled)
             {
-                AttemptNumber = 0,
-                SegmentRole = "forward",
-                SegmentLengthM = RouteGeometryUtils.CalculateDistance(seg),
-                OriginalWaypoint = new[] { next.Lat, next.Lon },
-                FinalWaypoint = new[] { next.Lat, next.Lon },
-                Resolution = "committed",
-            });
+                _diagnostics.Add(new DebugStemEvent
+                {
+                    AttemptNumber = 0,
+                    SegmentRole = "forward",
+                    SegmentLengthM = RouteGeometryUtils.CalculateDistance(seg),
+                    OriginalWaypoint = new[] { next.Lat, next.Lon },
+                    FinalWaypoint = new[] { next.Lat, next.Lon },
+                    Resolution = "committed",
+                });
+            }
 
             if (avoidHighways)
             {
@@ -198,13 +201,16 @@ public class RouteBuilder
             _ => null // Any (no preference)
         };
 
-        _diagnostics.Add(new DebugStemEvent
+        if (_diagnostics.Enabled)
         {
-            AttemptNumber = attemptNumber,
-            SegmentRole = "heartbeat",
-            Resolution = "pipeline_active",
-            OriginalWaypoint = new[] { start.Lat, start.Lon },
-        });
+            _diagnostics.Add(new DebugStemEvent
+            {
+                AttemptNumber = attemptNumber,
+                SegmentRole = "heartbeat",
+                Resolution = "pipeline_active",
+                OriginalWaypoint = new[] { start.Lat, start.Lon },
+            });
+        }
 
         // Initialize shared state
         var currentPos = _roadClassifier.TryResolveToRoadCounted(profile, start, 2000) ?? start;
@@ -553,6 +559,7 @@ public class RouteBuilder
 
             allSegments.Add(seg!);
             allPoints.Add(candidate);
+            var prevPos = currentPos;
             currentPos = candidate;
             totalDistKm += segLengthM / 1000;
 
@@ -607,50 +614,53 @@ public class RouteBuilder
                 }
             }
 
-            // Commit segment — emit diagnostic event
-            double segBearing2 = RouteGeometryUtils.ComputeBearing(currentPos, candidate);
-            var midpoint2 = RouteGeometryUtils.ComputeMidpoint(seg);
-            double distFromStart2 = RouteGeometryUtils.HaversineDistance(start, midpoint2);
-            double sectorFromStart2 = RouteGeometryUtils.ComputeBearing(start, midpoint2);
-            string? segRoadType2 = _roadClassifier.GetHighwayType(midpoint2, profile);
-            double segCurvature2 = RouteGeometryUtils.CalculateAverageCurvature(seg);
-            int segEdgeCount2 = RouteGeometryUtils.CountEdges(seg);
-            var candidateQuality2 = _roadClassifier.ClassifyRoad(candidate, profile, avoidHighways);
-            var committedEvt = new DebugStemEvent
+            // Commit segment — emit diagnostic event (skip all construction when diagnostics disabled)
+            if (_diagnostics.Enabled)
             {
-                AttemptNumber = attemptNumber,
-                SegmentRole = "forward",
-                SegmentIndex = committedCount,
-                SegmentLengthM = segLengthM,
-                CumulativeDistanceM = (totalDistKm - segLengthM / 1000) * 1000,
-                SegmentBearing = Math.Round(segBearing2, 1),
-                CloseCount = 0,
-                OpposedCount = 0,
-                Examined = 0,
-                FirstHalfPoints = 0,
-                SecondHalfPoints = 0,
-                OverlapWithPriorSegments = segOverlapAfter,
-                OriginalWaypoint = new[] { candidate.Lat, candidate.Lon },
-                FinalWaypoint = new[] { candidate.Lat, candidate.Lon },
-                Resolution = "committed",
-                PushOverlapBefore = segOverlapBefore,
-                PushOverlapAfter = segOverlapAfter,
-                RoadType = segRoadType2,
-                MidpointLat = midpoint2.Lat,
-                MidpointLon = midpoint2.Lon,
-                DistanceFromStartM = distFromStart2,
-                SectorFromStart = Math.Round(sectorFromStart2, 1),
-                SegmentCurvature = Math.Round(segCurvature2, 4),
-                EdgeCount = segEdgeCount2,
-                CandidateRoadClass = candidateQuality2.ToString(),
-                NearestNearMissM = 0,
-                HaversineToRoutedRatio = segLengthM > 0 ? Math.Round(haversineSegDist / segLengthM, 3) : 0,
-                RoadQualityAtMidpoint = segRoadType2,
-                SegmentEdgeDensityAtMidpoint = _edgeSpatialIndex.CountInRadius(midpoint2, _options.EdgeDensityCheckRadiusM),
-            };
+                double segBearing2 = RouteGeometryUtils.ComputeBearing(prevPos, candidate);
+                var midpoint2 = RouteGeometryUtils.ComputeMidpoint(seg);
+                double distFromStart2 = RouteGeometryUtils.HaversineDistance(start, midpoint2);
+                double sectorFromStart2 = RouteGeometryUtils.ComputeBearing(start, midpoint2);
+                string? segRoadType2 = _roadClassifier.GetHighwayType(midpoint2, profile);
+                double segCurvature2 = RouteGeometryUtils.CalculateAverageCurvature(seg);
+                int segEdgeCount2 = RouteGeometryUtils.CountEdges(seg);
+                var candidateQuality2 = _roadClassifier.ClassifyRoad(candidate, profile, avoidHighways);
+                var committedEvt = new DebugStemEvent
+                {
+                    AttemptNumber = attemptNumber,
+                    SegmentRole = "forward",
+                    SegmentIndex = committedCount,
+                    SegmentLengthM = segLengthM,
+                    CumulativeDistanceM = (totalDistKm - segLengthM / 1000) * 1000,
+                    SegmentBearing = Math.Round(segBearing2, 1),
+                    CloseCount = 0,
+                    OpposedCount = 0,
+                    Examined = 0,
+                    FirstHalfPoints = 0,
+                    SecondHalfPoints = 0,
+                    OverlapWithPriorSegments = segOverlapAfter,
+                    OriginalWaypoint = new[] { candidate.Lat, candidate.Lon },
+                    FinalWaypoint = new[] { candidate.Lat, candidate.Lon },
+                    Resolution = "committed",
+                    PushOverlapBefore = segOverlapBefore,
+                    PushOverlapAfter = segOverlapAfter,
+                    RoadType = segRoadType2,
+                    MidpointLat = midpoint2.Lat,
+                    MidpointLon = midpoint2.Lon,
+                    DistanceFromStartM = distFromStart2,
+                    SectorFromStart = Math.Round(sectorFromStart2, 1),
+                    SegmentCurvature = Math.Round(segCurvature2, 4),
+                    EdgeCount = segEdgeCount2,
+                    CandidateRoadClass = candidateQuality2.ToString(),
+                    NearestNearMissM = 0,
+                    HaversineToRoutedRatio = segLengthM > 0 ? Math.Round(haversineSegDist / segLengthM, 3) : 0,
+                    RoadQualityAtMidpoint = segRoadType2,
+                    SegmentEdgeDensityAtMidpoint = _edgeSpatialIndex.CountInRadius(midpoint2, _options.EdgeDensityCheckRadiusM),
+                };
 
-            RouteGeometryUtils.CaptureOverlappingEdgeIds(committedEvt, seg, allUsedEdges);
-            _diagnostics.Add(committedEvt);
+                RouteGeometryUtils.CaptureOverlappingEdgeIds(committedEvt, seg, allUsedEdges);
+                _diagnostics.Add(committedEvt);
+            }
 
             committedCount++;
             consecutiveFailures = 0;
@@ -738,19 +748,22 @@ public class RouteBuilder
                 homingWaypointsUsed++;
                 homingFound = true;
 
-                _diagnostics.Add(new DebugStemEvent
+                if (_diagnostics.Enabled)
                 {
-                    AttemptNumber = attemptNumber,
-                    SegmentRole = "homing",
-                    SegmentIndex = committedCount + hi,
-                    SegmentLengthM = RouteGeometryUtils.CalculateDistance(homingSeg),
-                    OverlapWithPriorSegments = homingSegOverlap,
-                    OriginalWaypoint = new[] { homingCandidate.Lat, homingCandidate.Lon },
-                    FinalWaypoint = new[] { homingCandidate.Lat, homingCandidate.Lon },
-                    Resolution = "homing",
-                    DistanceFromStartM = RouteGeometryUtils.HaversineDistance(start, homingCandidate),
-                    NearestNearMissM = 0,
-                });
+                    _diagnostics.Add(new DebugStemEvent
+                    {
+                        AttemptNumber = attemptNumber,
+                        SegmentRole = "homing",
+                        SegmentIndex = committedCount + hi,
+                        SegmentLengthM = RouteGeometryUtils.CalculateDistance(homingSeg),
+                        OverlapWithPriorSegments = homingSegOverlap,
+                        OriginalWaypoint = new[] { homingCandidate.Lat, homingCandidate.Lon },
+                        FinalWaypoint = new[] { homingCandidate.Lat, homingCandidate.Lon },
+                        Resolution = "homing",
+                        DistanceFromStartM = RouteGeometryUtils.HaversineDistance(start, homingCandidate),
+                        NearestNearMissM = 0,
+                    });
+                }
 
                 break;
             }
@@ -800,36 +813,42 @@ public class RouteBuilder
             if (forwardOverlap > 0.30)
             {
                 // High overlap on return — emit diagnostic and continue with the segment as-is
-                _diagnostics.Add(new DebugStemEvent
+                if (_diagnostics.Enabled)
                 {
-                    AttemptNumber = attemptNumber,
-                    SegmentRole = "return",
-                    SegmentLengthM = RouteGeometryUtils.CalculateDistance(returnSeg),
-                    OverlapWithPriorSegments = forwardOverlap,
-                    OriginalWaypoint = new[] { start.Lat, start.Lon },
-                    FinalWaypoint = new[] { start.Lat, start.Lon },
-                    Resolution = "committed",
-                    EstReturnHaversineKm = Math.Round(lastEstReturnHaversineKm, 2),
-                    EstReturnWithMultiplierKm = Math.Round(lastEstReturnWithMultiplierKm, 2),
-                    ActualReturnRoutedKm = Math.Round(RouteGeometryUtils.CalculateDistance(returnSeg) / 1000, 2),
-                });
+                    _diagnostics.Add(new DebugStemEvent
+                    {
+                        AttemptNumber = attemptNumber,
+                        SegmentRole = "return",
+                        SegmentLengthM = RouteGeometryUtils.CalculateDistance(returnSeg),
+                        OverlapWithPriorSegments = forwardOverlap,
+                        OriginalWaypoint = new[] { start.Lat, start.Lon },
+                        FinalWaypoint = new[] { start.Lat, start.Lon },
+                        Resolution = "committed",
+                        EstReturnHaversineKm = Math.Round(lastEstReturnHaversineKm, 2),
+                        EstReturnWithMultiplierKm = Math.Round(lastEstReturnWithMultiplierKm, 2),
+                        ActualReturnRoutedKm = Math.Round(RouteGeometryUtils.CalculateDistance(returnSeg) / 1000, 2),
+                    });
+                }
             }
             else
             {
-                _diagnostics.Add(new DebugStemEvent
+                if (_diagnostics.Enabled)
                 {
-                    AttemptNumber = attemptNumber,
-                    SegmentRole = "return",
-                    SegmentLengthM = RouteGeometryUtils.CalculateDistance(returnSeg),
-                    OverlapWithPriorSegments = forwardOverlap,
-                    OriginalWaypoint = new[] { start.Lat, start.Lon },
-                    FinalWaypoint = new[] { start.Lat, start.Lon },
-                    Resolution = "committed",
-                    NearestNearMissM = 0,
-                    EstReturnHaversineKm = Math.Round(lastEstReturnHaversineKm, 2),
-                    EstReturnWithMultiplierKm = Math.Round(lastEstReturnWithMultiplierKm, 2),
-                    ActualReturnRoutedKm = Math.Round(RouteGeometryUtils.CalculateDistance(returnSeg) / 1000, 2),
-                });
+                    _diagnostics.Add(new DebugStemEvent
+                    {
+                        AttemptNumber = attemptNumber,
+                        SegmentRole = "return",
+                        SegmentLengthM = RouteGeometryUtils.CalculateDistance(returnSeg),
+                        OverlapWithPriorSegments = forwardOverlap,
+                        OriginalWaypoint = new[] { start.Lat, start.Lon },
+                        FinalWaypoint = new[] { start.Lat, start.Lon },
+                        Resolution = "committed",
+                        NearestNearMissM = 0,
+                        EstReturnHaversineKm = Math.Round(lastEstReturnHaversineKm, 2),
+                        EstReturnWithMultiplierKm = Math.Round(lastEstReturnWithMultiplierKm, 2),
+                        ActualReturnRoutedKm = Math.Round(RouteGeometryUtils.CalculateDistance(returnSeg) / 1000, 2),
+                    });
+                }
             }
         }
 
@@ -937,17 +956,20 @@ public class RouteBuilder
         // Motorways are now blocked at load time — no post-hoc checking needed
 
         // Add diagnostic information
-        _diagnostics.Add(new DebugStemEvent
+        if (_diagnostics.Enabled)
         {
-            AttemptNumber = attemptNumber,
-            SegmentRole = "forward",
-            SegmentLengthM = RouteGeometryUtils.CalculateDistance(geometry),
-            OverlapWithPriorSegments = overlapRatio,
-            OriginalWaypoint = new[] { start.Lat, start.Lon },
-            FinalWaypoint = new[] { start.Lat, start.Lon },
-            Resolution = "alternative_path",
-            StraightLineRatio = plateauCount,
-        });
+            _diagnostics.Add(new DebugStemEvent
+            {
+                AttemptNumber = attemptNumber,
+                SegmentRole = "forward",
+                SegmentLengthM = RouteGeometryUtils.CalculateDistance(geometry),
+                OverlapWithPriorSegments = overlapRatio,
+                OriginalWaypoint = new[] { start.Lat, start.Lon },
+                FinalWaypoint = new[] { start.Lat, start.Lon },
+                Resolution = "alternative_path",
+                StraightLineRatio = plateauCount,
+            });
+        }
 
         context.FinalEdgeSetSize = geometry.Count - 1;
         context.ReturnPathDiagnostics = returnPathDiagnostics;

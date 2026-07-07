@@ -378,7 +378,8 @@ public class RoutingService
         RouteRequest request,
         int candidateCount,
         IOptions<RouteGenerationOptions>? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<(int candidateIndex, int candidateCount, double fraction, string? message)>? progress = null)
     {
         Interlocked.Increment(ref _inFlightRequests);
         TouchIdleTimer();
@@ -386,7 +387,7 @@ public class RoutingService
         {
             var pool = EnsurePool(candidateCount);
             return await Task.Run(() =>
-                GenerateLoopRouteCandidates(request, pool, candidateCount, options, cancellationToken),
+                GenerateLoopRouteCandidates(request, pool, candidateCount, options, cancellationToken, progress),
                 cancellationToken);
         }
         finally
@@ -404,7 +405,8 @@ public class RoutingService
         RouterDbPool pool,
         int candidateCount,
         IOptions<RouteGenerationOptions>? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<(int candidateIndex, int candidateCount, double fraction, string? message)>? progress = null)
     {
         var repos = pool.CheckoutMultiple(candidateCount);
         var candidates = new RouteResponse[candidateCount];
@@ -418,6 +420,13 @@ public class RoutingService
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var service = new RoutingService(repos[i], options);
+
+                    if (progress != null)
+                    {
+                        service.ProgressChanged += p => progress.Report((i, candidateCount, p, null));
+                        service.StatusChanged += msg => progress.Report((i, candidateCount, -1, msg));
+                    }
+
                     candidates[i] = service.GenerateLoopRoute(request, cancellationToken);
                 }
                 catch (OperationCanceledException) { throw; }
@@ -481,14 +490,14 @@ public class RoutingService
             bestQuality = stats.QualityScore;
             bestRepetition = stats.RepetitionRatio;
             bestAttempt = attempt + 1;
-            bestRoute = BuildRouteResponse(geometry, stats, allPoints, repetition, _routeStatistics.ReturnToStartIndex, _diagnostics.ToJson());
+            bestRoute = BuildRouteResponse(geometry, stats, allPoints, repetition, _routeStatistics.ReturnToStartIndex);
         }
 
         // Within-cap: hard constraints + highest QualityScore
         if (stats.TotalDistanceKm <= targetDist * _options.OvershootThresholdMultiplier && repetition.OutAndBackM <= _options.OutAndBackOverlapThresholdM && stats.QualityScore > bestQualityWithinCap)
         {
             bestQualityWithinCap = stats.QualityScore;
-            bestRouteWithinCap = BuildRouteResponse(geometry, stats, allPoints, repetition, _routeStatistics.ReturnToStartIndex, _diagnostics.ToJson());
+            bestRouteWithinCap = BuildRouteResponse(geometry, stats, allPoints, repetition, _routeStatistics.ReturnToStartIndex);
         }
     }
 
@@ -508,6 +517,7 @@ public class RoutingService
         StatusChanged?.Invoke($"Generating route (attempt 1/{_options.MaxRouteAttempts})...");
 
         _diagnostics.Clear();
+        _diagnostics.Enabled = request.CollectDiagnostics;
 
         double bestRepetition = double.MaxValue;
         double bestQuality = -1;
@@ -517,7 +527,7 @@ public class RoutingService
         int bestAttempt = 0;
         double previousRepetition = double.MaxValue;
         double previousQuality = -1;
-        var previousGeometries = new List<List<Coordinate>>();
+        var previousGeometries = new List<(List<Coordinate> geom, HashSet<RouteGeometryUtils.EdgeKey> edges)>();
         var attemptElapsedMs = new List<double>();
         var attemptRepetitionRatio = new List<double>();
         var attemptQualityScore = new List<double>();
@@ -570,22 +580,18 @@ public class RoutingService
             if (context.FailedTurnaroundBearing.HasValue)
                 previousFailedBearing = context.FailedTurnaroundBearing;
 
-            // Compute attempt diversity (overlap with previous attempts)
+            // Compute attempt diversity (overlap with previous attempts) — reuse cached edge sets
             double overlapWithPrevious = 0;
             bool isDuplicate = false;
+            var currentEdges = new HashSet<RouteGeometryUtils.EdgeKey>();
+            for (int i = 0; i < geometry.Count - 1; i++)
+                currentEdges.Add(RouteGeometryUtils.MakeEdgeKey(geometry[i], geometry[i + 1]));
+
             if (previousGeometries.Count > 0)
             {
-                var currentEdges = new HashSet<RouteGeometryUtils.EdgeKey>();
-                for (int i = 0; i < geometry.Count - 1; i++)
-                    currentEdges.Add(RouteGeometryUtils.MakeEdgeKey(geometry[i], geometry[i + 1]));
-
                 double maxOverlap = 0;
-                foreach (var prevGeom in previousGeometries)
+                foreach (var (_, prevEdges) in previousGeometries)
                 {
-                    var prevEdges = new HashSet<RouteGeometryUtils.EdgeKey>();
-                    for (int i = 0; i < prevGeom.Count - 1; i++)
-                        prevEdges.Add(RouteGeometryUtils.MakeEdgeKey(prevGeom[i], prevGeom[i + 1]));
-
                     int shared = 0;
                     foreach (var key in currentEdges)
                         if (prevEdges.Contains(key)) shared++;
@@ -596,7 +602,7 @@ public class RoutingService
                 overlapWithPrevious = maxOverlap;
                 isDuplicate = maxOverlap > 0.8;
             }
-            previousGeometries.Add(geometry);
+            previousGeometries.Add((geometry, currentEdges));
             var repSw = System.Diagnostics.Stopwatch.StartNew();
             var repetition = _routeStatistics.CalculateRepetition(geometry);
             repSw.Stop();
@@ -604,89 +610,95 @@ public class RoutingService
             var stats = _routeStatistics.CalculateStats(geometry, profile, precomputedRepetition: repetition);
             statsSw.Stop();
 
-            var overlapTriggered = _diagnostics.CountOverlapTriggered();
+            var overlapTriggered = _diagnostics.Enabled ? _diagnostics.CountOverlapTriggered() : 0;
 
             ComputeAttemptMetrics(stats, repetition, geometry, targetDist);
 
-            var edgeReuseCounts = new Dictionary<RouteGeometryUtils.EdgeKey, int>();
-            for (int i = 0; i < geometry.Count - 1; i++)
-            {
-                var key = RouteGeometryUtils.MakeEdgeKey(geometry[i], geometry[i + 1]);
-                if (edgeReuseCounts.ContainsKey(key))
-                    edgeReuseCounts[key]++;
-                else
-                    edgeReuseCounts[key] = 1;
-            }
-            int maxEdgeReuse = edgeReuseCounts.Count > 0 ? edgeReuseCounts.Values.Max() : 0;
-            double avgEdgeReuse = edgeReuseCounts.Count > 0 ? edgeReuseCounts.Values.Average() : 0;
-
+            // Diagnostic-only: edge reuse, bottleneck analysis, shape analysis, stem events
+            int maxEdgeReuse = 0;
+            double avgEdgeReuse = 0;
             double avgSegmentLength = context.SegmentLengths.Count > 0 ? context.SegmentLengths.Average() : 0;
+            string parallelization = "";
+            RouteGeometryUtils.RouteShapeAnalysis shapeAnalysis = default;
+            double returnOverlapM = 0;
+            double returnSegmentLength = 0;
+            Dictionary<string, double> overlapByPosition = new();
+
+            if (_diagnostics.Enabled)
+            {
+                var edgeReuseCounts = new Dictionary<RouteGeometryUtils.EdgeKey, int>();
+                for (int i = 0; i < geometry.Count - 1; i++)
+                {
+                    var key = RouteGeometryUtils.MakeEdgeKey(geometry[i], geometry[i + 1]);
+                    if (edgeReuseCounts.ContainsKey(key))
+                        edgeReuseCounts[key]++;
+                    else
+                        edgeReuseCounts[key] = 1;
+                }
+                maxEdgeReuse = edgeReuseCounts.Count > 0 ? edgeReuseCounts.Values.Max() : 0;
+                avgEdgeReuse = edgeReuseCounts.Count > 0 ? edgeReuseCounts.Values.Average() : 0;
+
+                var timingFields = new Dictionary<string, long>
+                {
+                    ["RoutingCalls"] = _routeAssembler.PerRouteRoutingCallsMs,
+                    ["RoadClassification"] = _roadClassifier.ClassificationMs,
+                    ["CoordinateResolution"] = _roadClassifier.ResolutionMs,
+                    ["OverlapCalc"] = context.OverlapCalcMs,
+                    ["MotorwayBlocking"] = _edgeBlocker.FindMotorwayMs,
+                    ["TurnaroundDensity"] = context.TurnaroundDensityCheckMs,
+                };
+                var topBottleneck = timingFields.OrderByDescending(kvp => kvp.Value).First();
+                long totalTimingMs = timingFields.Values.Sum();
+                double bottleneckPct = totalTimingMs > 0
+                    ? Math.Round((double)topBottleneck.Value / totalTimingMs * 100, 1)
+                    : 0;
+
+                if (_roadClassifier.ClassificationMs > attemptSw.ElapsedMilliseconds * 0.2)
+                    parallelization = "Road classification is bottleneck. Could cache results or parallelize per-sample-point.";
+                else if (_roadClassifier.ResolutionMs > attemptSw.ElapsedMilliseconds * 0.2)
+                    parallelization = "Coordinate resolution is bottleneck. Could batch-resolve points.";
+                else if (_edgeBlocker.FindMotorwayMs > attemptSw.ElapsedMilliseconds * 0.15)
+                    parallelization = "Motorway blocking is bottleneck. Edge enumeration could run on background thread.";
+
+                shapeAnalysis = RouteGeometryUtils.AnalyzeRouteShape(geometry, request.Start);
+                (returnOverlapM, returnSegmentLength, overlapByPosition) = ComputeAllDiagnosticsInSinglePass();
+
+                _diagnostics.Add(CreateAttemptDiagnosticsRecord(new AttemptData(
+                    Attempt: attempt,
+                    TargetDist: targetDist,
+                    Request: request,
+                    Stats: stats,
+                    Repetition: repetition,
+                    Context: context,
+                    AllPoints: allPoints,
+                    ShapeAnalysis: shapeAnalysis,
+                    AttemptElapsedMs: attemptSw.ElapsedMilliseconds,
+                    RepElapsedMs: repSw.ElapsedMilliseconds,
+                    StatsElapsedMs: statsSw.ElapsedMilliseconds,
+                    MemStart: memStart,
+                    GcStart: gcStart, Gc1Start: gc1Start, Gc2Start: gc2Start,
+                    MaxEdgeReuse: maxEdgeReuse,
+                    AvgEdgeReuse: avgEdgeReuse,
+                    AvgSegmentLength: avgSegmentLength,
+                    EdgeReuseCounts: edgeReuseCounts,
+                    OverlapWithPrevious: overlapWithPrevious,
+                    IsDuplicate: isDuplicate,
+                    TopBottleneck: topBottleneck,
+                    BottleneckPct: bottleneckPct,
+                    Parallelization: parallelization,
+                    ReturnOverlapM: returnOverlapM,
+                    ReturnSegmentLength: returnSegmentLength,
+                    OverlapByPosition: overlapByPosition,
+                    PreviousRepetition: previousRepetition,
+                    PreviousQuality: previousQuality,
+                    OverlapTriggered: overlapTriggered
+                )));
+            }
 
             attemptElapsedMs.Add(attemptSw.ElapsedMilliseconds);
             attemptRepetitionRatio.Add(stats.RepetitionRatio);
             attemptQualityScore.Add(stats.QualityScore);
             attemptOverlapWithPrevious.Add(overlapWithPrevious);
-
-            // Phase 4: Bottleneck analysis (compute BEFORE record creation)
-            var timingFields = new Dictionary<string, long>
-            {
-                ["RoutingCalls"] = _routeAssembler.PerRouteRoutingCallsMs,
-                ["RoadClassification"] = _roadClassifier.ClassificationMs,
-                ["CoordinateResolution"] = _roadClassifier.ResolutionMs,
-                ["OverlapCalc"] = context.OverlapCalcMs,
-                ["MotorwayBlocking"] = _edgeBlocker.FindMotorwayMs,
-                ["TurnaroundDensity"] = context.TurnaroundDensityCheckMs,
-            };
-            var topBottleneck = timingFields.OrderByDescending(kvp => kvp.Value).First();
-            long totalTimingMs = timingFields.Values.Sum();
-            double bottleneckPct = totalTimingMs > 0
-                ? Math.Round((double)topBottleneck.Value / totalTimingMs * 100, 1)
-                : 0;
-
-            string parallelization = "";
-            if (_roadClassifier.ClassificationMs > attemptSw.ElapsedMilliseconds * 0.2)
-                parallelization = "Road classification is bottleneck. Could cache results or parallelize per-sample-point.";
-            else if (_roadClassifier.ResolutionMs > attemptSw.ElapsedMilliseconds * 0.2)
-                parallelization = "Coordinate resolution is bottleneck. Could batch-resolve points.";
-            else if (_edgeBlocker.FindMotorwayMs > attemptSw.ElapsedMilliseconds * 0.15)
-                parallelization = "Motorway blocking is bottleneck. Edge enumeration could run on background thread.";
-
-            // Analyze route shape for circularity diagnostics
-            var shapeAnalysis = RouteGeometryUtils.AnalyzeRouteShape(geometry, request.Start);
-
-            // Single pass over all stem events for diagnostics (replaces 8 separate passes)
-            var (returnOverlapM, returnSegmentLength, overlapByPosition) = ComputeAllDiagnosticsInSinglePass();
-
-            _diagnostics.Add(CreateAttemptDiagnosticsRecord(new AttemptData(
-                Attempt: attempt,
-                TargetDist: targetDist,
-                Request: request,
-                Stats: stats,
-                Repetition: repetition,
-                Context: context,
-                AllPoints: allPoints,
-                ShapeAnalysis: shapeAnalysis,
-                AttemptElapsedMs: attemptSw.ElapsedMilliseconds,
-                RepElapsedMs: repSw.ElapsedMilliseconds,
-                StatsElapsedMs: statsSw.ElapsedMilliseconds,
-                MemStart: memStart,
-                GcStart: gcStart, Gc1Start: gc1Start, Gc2Start: gc2Start,
-                MaxEdgeReuse: maxEdgeReuse,
-                AvgEdgeReuse: avgEdgeReuse,
-                AvgSegmentLength: avgSegmentLength,
-                EdgeReuseCounts: edgeReuseCounts,
-                OverlapWithPrevious: overlapWithPrevious,
-                IsDuplicate: isDuplicate,
-                TopBottleneck: topBottleneck,
-                BottleneckPct: bottleneckPct,
-                Parallelization: parallelization,
-                ReturnOverlapM: returnOverlapM,
-                ReturnSegmentLength: returnSegmentLength,
-                OverlapByPosition: overlapByPosition,
-                PreviousRepetition: previousRepetition,
-                PreviousQuality: previousQuality,
-                OverlapTriggered: overlapTriggered
-            )));
 
             previousRepetition = stats.RepetitionRatio;
             previousQuality = stats.QualityScore;
@@ -697,6 +709,7 @@ public class RoutingService
 
             if (stats.RepetitionRatio <= _options.MaxRepetitionRatio && stats.TotalDistanceKm <= targetDist * _options.OvershootThresholdMultiplier && stats.QualityScore >= _options.EarlyAcceptQualityScore)
             {
+                bestRoute!.StemDiagnosticsJson = _diagnostics.ToJson();
                 StatusChanged?.Invoke($"Route generated (attempt {attempt + 1}, QS={stats.QualityScore:F0}, RR={stats.RepetitionRatio:P0})");
                 ProgressChanged?.Invoke(1.0);
                 attemptRejectionReasons.Add("accepted_winner");

@@ -14,4 +14,5 @@ public class RouteRequest
     public bool AvoidHighways { get; set; } = true;
     [Range(1, 20)] public int WaypointCount { get; set; } = 6;
     public DirectionBias Direction { get; set; } = DirectionBias.Any;
+    public bool CollectDiagnostics { get; set; }
 }

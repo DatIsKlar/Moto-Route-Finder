@@ -42,7 +42,13 @@
         <div class="map-area">
             <div id="map">
                 <div id="loadingOverlay" class="loading-overlay" style="display:none">
-                    <div class="spinner"></div>
+                    <div class="progress-panel">
+                        <div class="progress-bar-track">
+                            <div id="progressBarFill" class="progress-bar-fill" style="width:0%"></div>
+                        </div>
+                        <div id="progressPercent" class="progress-percent">0%</div>
+                        <div id="progressStepLabel" class="progress-step-label">Starting...</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -86,10 +92,6 @@
                     <input type="number" id="targetDuration" value="0" min="0" max="480" step="15">
                 </div>
                 <div class="setting-row">
-                    <label>Waypoint Count</label>
-                    <input type="number" id="waypointCount" value="6" min="3" max="15" step="1">
-                </div>
-                <div class="setting-row">
                     <label>Avoid Highways</label>
                     <input type="checkbox" id="avoidHighways" checked>
                 </div>
@@ -131,10 +133,6 @@
             </div>
 
             <div class="section" id="testSection" style="display:none">
-                <div class="setting-row">
-                    <label>Random Waypoint Count</label>
-                    <input type="checkbox" id="randomWaypointCount">
-                </div>
                 <div class="setting-row">
                     <label>Test Route Count</label>
                     <input type="number" id="testRouteCount" value="5" min="1" max="100" step="1">
