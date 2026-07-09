@@ -360,7 +360,7 @@ public class EdgeBlocker
         _gridPointsSampled = 0;
 
         var result = motorways.ToList();
-        Console.WriteLine($"[MOTORWAY] Edge walk: {vertexCount:N0} vertices, {result.Count:N0} motorway edges found in {sw.ElapsedMilliseconds}ms");
+        System.Diagnostics.Debug.WriteLine($"[MOTORWAY] Edge walk: {vertexCount:N0} vertices, {result.Count:N0} motorway edges found in {sw.ElapsedMilliseconds}ms");
         statusCallback?.Invoke($"Found {result.Count:N0} motorway edges via complete edge walk in {sw.ElapsedMilliseconds}ms");
         return result;
     }
@@ -399,132 +399,6 @@ public class EdgeBlocker
         }
 
         return count;
-    }
-
-    /// <summary>
-    /// Step 3 probe: verify the edge walk's IDs match GetEdge(id) by checking tags directly.
-    /// For each sample motorway edge found via en.Id, calls GetEdge(en.Id) and verifies
-    /// the returned edge's profile tags still say motorway/motorway_link.
-    /// </summary>
-    public Dictionary<string, object> ProbeEdgeWalkSafety(Action<string>? statusCallback = null)
-    {
-        var result = new Dictionary<string, object>();
-        var db = _mapRepository.RouterDb;
-        if (db == null)
-        {
-            result["error"] = "RouterDb not loaded";
-            return result;
-        }
-
-        var network = db.Network;
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-
-        // 1. Walk all vertices to find motorway edges via en.Id
-        uint vertexCount = network.VertexCount;
-        var motorwayEdges = new List<(uint edgeId, uint fromVertex, uint toVertex)>();
-        var allEdgesWalked = 0;
-
-        var en = network.GetEdgeEnumerator();
-        for (uint v = 0; v < vertexCount; v++)
-        {
-            if (!en.MoveTo(v)) continue;
-            while (en.MoveNext())
-            {
-                allEdgesWalked++;
-                uint edgeId = en.Id;
-
-                var tags = db.EdgeProfiles.Get(en.Data.Profile);
-                if (tags != null && tags.TryGetValue("highway", out string? hw))
-                {
-                    hw = hw.ToLowerInvariant();
-                    if (hw == "motorway" || hw == "motorway_link")
-                    {
-                        bool alreadyFound = false;
-                        foreach (var existing in motorwayEdges)
-                        {
-                            if (existing.edgeId == edgeId) { alreadyFound = true; break; }
-                        }
-                        if (!alreadyFound)
-                        {
-                            motorwayEdges.Add((edgeId, en.From, en.To));
-                        }
-                    }
-                }
-            }
-        }
-
-        sw.Stop();
-        result["vertexCount"] = vertexCount;
-        result["allEdgesWalked"] = allEdgesWalked;
-        result["motorwayEdgesFound"] = motorwayEdges.Count;
-        result["walkMs"] = sw.ElapsedMilliseconds;
-
-        var msg = $"[PROBE] Walk: {vertexCount} vertices, {allEdgesWalked} edges, {motorwayEdges.Count} motorways in {sw.ElapsedMilliseconds}ms";
-        Console.WriteLine(msg);
-        statusCallback?.Invoke(msg);
-
-        if (motorwayEdges.Count == 0)
-        {
-            result["error"] = "No motorway edges found — enumeration may be broken";
-            return result;
-        }
-
-        // 2. Id-mapping proof: for each sample, verify GetEdge(en.Id) returns the same motorway edge
-        int sampleCount = Math.Min(10, motorwayEdges.Count);
-        var samples = motorwayEdges.Take(sampleCount).ToList();
-        var idProofResults = new List<Dictionary<string, object>>();
-
-        foreach (var sample in samples)
-        {
-            var proof = new Dictionary<string, object>();
-            proof["edgeId"] = sample.edgeId;
-
-            try
-            {
-                // Direct tag assertion: GetEdge(en.Id) → EdgeProfiles.Get → verify motorway
-                var edge = network.GetEdge(sample.edgeId);
-                var edgeTags = db.EdgeProfiles.Get(edge.Data.Profile);
-
-                if (edgeTags == null)
-                {
-                    proof["tagMatch"] = false;
-                    proof["reason"] = "EdgeProfiles.Get returned null";
-                }
-                else if (edgeTags.TryGetValue("highway", out string? edgeHw))
-                {
-                    edgeHw = edgeHw.ToLowerInvariant();
-                    proof["getEdgeHighway"] = edgeHw;
-                    proof["tagMatch"] = edgeHw == "motorway" || edgeHw == "motorway_link";
-                }
-                else
-                {
-                    proof["tagMatch"] = false;
-                    proof["reason"] = "No highway tag on edge";
-                }
-
-                // Also verify profile != 0 (not already blocked)
-                proof["profileId"] = edge.Data.Profile;
-                proof["profileNotZero"] = edge.Data.Profile != 0;
-            }
-            catch (Exception ex)
-            {
-                proof["tagMatch"] = false;
-                proof["getError"] = ex.Message;
-            }
-
-            idProofResults.Add(proof);
-        }
-
-        result["idProof"] = idProofResults;
-
-        bool allPassed = idProofResults.All(p => p.ContainsKey("tagMatch") && (bool)p["tagMatch"]);
-        result["allPassed"] = allPassed;
-
-        var summaryMsg = $"[PROBE] Id-mapping proof: {sampleCount} samples tested, allPassed={allPassed}";
-        Console.WriteLine(summaryMsg);
-        statusCallback?.Invoke(summaryMsg);
-
-        return result;
     }
 
     /// <summary>

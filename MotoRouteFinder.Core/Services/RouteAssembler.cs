@@ -110,8 +110,9 @@ public class RouteAssembler
             }
             return result;
         }
-        catch
+        catch (Exception ex)
         {
+            System.Diagnostics.Debug.WriteLine($"RouteAssembly failed: {ex.Message}");
             _perRouteWastedCalls++;
             return null;
         }

@@ -279,6 +279,9 @@ public static class RouteGeometryUtils
             totalDistance += HaversineDistance(prev, curr);
         }
 
+        // Include final segment distance
+        totalDistance += HaversineDistance(points[^2], points[^1]);
+
         return totalDistance > 0 ? totalHeadingChange / totalDistance : 0;
     }
 
@@ -689,12 +692,24 @@ public static class RouteGeometryUtils
         double forwardCompactness = CalculatePathCompactness(forwardPath);
         double returnCompactness = CalculatePathCompactness(returnPath);
 
-        // Calculate bearing statistics
+        // Calculate bearing statistics using circular mean (correct for angular quantities)
         var allBearings = new List<double>();
         for (int i = 0; i < geometry.Count - 1; i++)
             allBearings.Add(ComputeBearing(geometry[i], geometry[i + 1]));
-        double avgBearing = allBearings.Count > 0 ? allBearings.Average() : 0;
-        double bearingVariance = allBearings.Count > 1 ? allBearings.Average(b => Math.Pow(b - avgBearing, 2)) : 0;
+        double avgBearing = 0;
+        double bearingVariance = 0;
+        if (allBearings.Count > 0)
+        {
+            // Circular mean via vector addition
+            double sinSum = allBearings.Average(b => Math.Sin(b * Math.PI / 180));
+            double cosSum = allBearings.Average(b => Math.Cos(b * Math.PI / 180));
+            avgBearing = Math.Atan2(sinSum, cosSum) * 180 / Math.PI;
+            if (avgBearing < 0) avgBearing += 360;
+
+            // Circular variance: 1 - resultant length
+            double resultantLength = Math.Sqrt(sinSum * sinSum + cosSum * cosSum);
+            bearingVariance = 1.0 - resultantLength;
+        }
 
         return new RouteShapeAnalysis(
             forwardSpread, returnSpread, turnaroundBearing,
@@ -710,22 +725,33 @@ public static class RouteGeometryUtils
     }
 
     /// <summary>
-    /// Calculates the spread of bearings in a path.
-    /// Samples every ~500m to avoid low spread from consecutive coordinates on the same road.
-    /// Computes bearing from the previous sample point to the current sample point (500m apart).
-    /// Higher values mean the path covers more directions (more circular).
+    /// Calculates the turnaround angle: the angle between the arrival bearing at the turnaround
+    /// point and the departure bearing from it. A sharp U-turn gives ~180°; a gradual curve
+    /// gives a smaller angle.
     /// </summary>
-    public static double CalculateTurnaroundAngle(List<Coordinate> forwardPath)
+    /// <param name="forwardPath">Path from start to turnaround point</param>
+    /// <param name="returnPath">Path from turnaround point back to start (optional; if null, uses reverse of forwardPath tail)</param>
+    public static double CalculateTurnaroundAngle(List<Coordinate> forwardPath, List<Coordinate>? returnPath = null)
     {
         if (forwardPath.Count < 3) return 0;
-        // Compute bearing from second-to-last point to last point (departure bearing)
-        // and from last point to second-to-last point (return bearing).
-        // The angle between them indicates how sharp the U-turn is.
-        int last = forwardPath.Count - 1;
-        int prev = forwardPath.Count - 2;
-        double bearingOut = ComputeBearing(forwardPath[prev], forwardPath[last]);
-        double bearingBack = ComputeBearing(forwardPath[last], forwardPath[prev]);
-        double angle = Math.Abs(bearingOut - bearingBack);
+
+        // Arrival bearing: from second-to-last point to last point (the turnaround)
+        int arrivalIdx = Math.Max(0, forwardPath.Count - 2);
+        double arrivalBearing = ComputeBearing(forwardPath[arrivalIdx], forwardPath[^1]);
+
+        // Departure bearing: from turnaround point to first point of return path
+        double departureBearing;
+        if (returnPath != null && returnPath.Count >= 2)
+        {
+            departureBearing = ComputeBearing(returnPath[0], returnPath[1]);
+        }
+        else
+        {
+            // Fallback: reverse of arrival (measures pure U-turn)
+            departureBearing = ComputeBearing(forwardPath[^1], forwardPath[arrivalIdx]);
+        }
+
+        double angle = Math.Abs(departureBearing - arrivalBearing);
         if (angle > 180) angle = 360 - angle;
         return angle;
     }
@@ -747,7 +773,7 @@ public static class RouteGeometryUtils
             {
                 bearings.Add(ComputeBearing(path[lastSampleIndex], path[i]));
                 lastSampleIndex = i;
-                accumulatedDist = 0;
+                accumulatedDist -= sampleInterval;
             }
         }
 
@@ -838,6 +864,9 @@ public static class RouteGeometryUtils
             totalHeadingChange += headingChange * Math.PI / 180; // Convert to radians
             totalDistance += HaversineDistance(path[i - 1], path[i]);
         }
+
+        // Include final segment distance
+        totalDistance += HaversineDistance(path[^2], path[^1]);
 
         return totalDistance > 0 ? totalHeadingChange / totalDistance : 0;
     }
@@ -1444,7 +1473,7 @@ public static class RouteGeometryUtils
         {
             if (_grid.Count == 0) return 0;
 
-            double radiusDeg = radiusM / 111320.0;
+            double radiusDeg = radiusM / GeoConstants.MetersPerDegreeLat;
             double cosLat = Math.Cos(center.Lat * Math.PI / 180);
             double radiusLonDeg = radiusDeg / Math.Max(cosLat, GeoConstants.MinCosLat);
 
@@ -1492,7 +1521,7 @@ public static class RouteGeometryUtils
         {
             if (_grid.Count == 0) return false;
 
-            double radiusDeg = radiusM / 111320.0;
+            double radiusDeg = radiusM / GeoConstants.MetersPerDegreeLat;
             double cosLat = Math.Cos(point.Lat * Math.PI / 180);
             double radiusLonDeg = radiusDeg / Math.Max(cosLat, GeoConstants.MinCosLat);
 

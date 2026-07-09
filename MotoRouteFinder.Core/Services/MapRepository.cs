@@ -123,19 +123,7 @@ public class MapRepository
             _routerDb = LoadRouterDb(cachePath);
 
             // Integrity check: if filename says _nomotorway, verify motorways are actually blocked
-            if (_motorwaysInCache)
-            {
-                var checkBlocker = new EdgeBlocker(this);
-                int routableMotorways = checkBlocker.CountRoutableMotorways();
-                if (routableMotorways > 0)
-                {
-                    _motorwayBlockingSuspect = true;
-                    _routableMotorwayEdgesOnLoad = routableMotorways;
-                    var warnMsg = $"[WARN] Cache claims _nomotorway but {routableMotorways:N0} motorway edges are still routable — cache may be stale or misbuilt";
-                    Console.WriteLine(warnMsg);
-                    StatusChanged?.Invoke(warnMsg);
-                }
-            }
+            VerifyMotorwayBlockingIntegrity();
 
             _router = new Router(_routerDb);
             CachePath = cachePath;
@@ -230,19 +218,7 @@ public class MapRepository
         _routerDb = LoadRouterDb(cachePath);
 
         // Integrity check: if avoidHighways, verify motorways are actually blocked
-        if (_motorwaysInCache)
-        {
-            var checkBlocker = new EdgeBlocker(this);
-            int routableMotorways = checkBlocker.CountRoutableMotorways();
-            if (routableMotorways > 0)
-            {
-                _motorwayBlockingSuspect = true;
-                _routableMotorwayEdgesOnLoad = routableMotorways;
-                var warnMsg = $"[WARN] Cache claims _nomotorway but {routableMotorways:N0} motorway edges are still routable — cache may be stale or misbuilt";
-                Console.WriteLine(warnMsg);
-                StatusChanged?.Invoke(warnMsg);
-            }
-        }
+        VerifyMotorwayBlockingIntegrity();
 
         _router = new Router(_routerDb);
         CachePath = cachePath;
@@ -330,9 +306,12 @@ public class MapRepository
             _motorwaysFailedToBlock = 0;
             _motorwayBlockValidationPassed = false;
             _motorwaysScanCompleted = false;
-            _motorwayEdgeCache.Clear();
 
-            Console.WriteLine($"[MEM] MapRepository.ClearMaps: RouterDb={hadRouterDb} (edges={routerDbEdges}), Router={hadRouter}, EdgeBlocker={hadEdgeBlocker}, LoadedMaps={loadedCount}");
+            // Remove only this instance's cache entries, not the entire static cache
+            if (!string.IsNullOrEmpty(CachePath))
+                _motorwayEdgeCache.TryRemove(CachePath, out _);
+
+            System.Diagnostics.Debug.WriteLine($"[MEM] MapRepository.ClearMaps: RouterDb={hadRouterDb} (edges={routerDbEdges}), Router={hadRouter}, EdgeBlocker={hadEdgeBlocker}, LoadedMaps={loadedCount}");
         }
     }
 
@@ -360,6 +339,22 @@ public class MapRepository
 
     private static string GetMultiMapNoMotorwayCachePath(string[] osmPbfPaths)
         => GetMultiMapCachePath(osmPbfPaths, nomotorway: true);
+
+    private void VerifyMotorwayBlockingIntegrity()
+    {
+        if (!_motorwaysInCache) return;
+
+        var checkBlocker = new EdgeBlocker(this);
+        int routableMotorways = checkBlocker.CountRoutableMotorways();
+        if (routableMotorways > 0)
+        {
+            _motorwayBlockingSuspect = true;
+            _routableMotorwayEdgesOnLoad = routableMotorways;
+            var warnMsg = $"[WARN] Cache claims _nomotorway but {routableMotorways:N0} motorway edges are still routable — cache may be stale or misbuilt";
+            System.Diagnostics.Debug.WriteLine(warnMsg);
+            StatusChanged?.Invoke(warnMsg);
+        }
+    }
 
     private static RouterDb LoadRouterDb(string path)
     {

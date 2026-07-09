@@ -80,7 +80,7 @@ public class RoutingService
         _routeAssembler = new RouteAssembler(_mapRepository, _roadClassifier);
         _waypointGenerator = new WaypointGenerator(_roadClassifier, _edgeSpatialIndex, _options);
         _routeStatistics = new RouteStatistics(_roadClassifier);
-        _routeBuilder = new RouteBuilder(_mapRepository, _roadClassifier, _routeAssembler, _waypointGenerator, _routeStatistics, _diagnostics, _edgeBlocker, options: options);
+        _routeBuilder = new RouteBuilder(_mapRepository, _roadClassifier, _routeAssembler, _waypointGenerator, _routeStatistics, _diagnostics, _edgeBlocker, _edgeSpatialIndex, options: options);
     }
 
     public bool IsLoaded => _mapRepository.IsLoaded;
@@ -104,14 +104,13 @@ public class RoutingService
     /// Reuses existing pool if large enough, otherwise disposes and recreates.
     /// Only disposes the old pool when no instances are checked out.
     /// </summary>
-    public RouterDbPool EnsurePool(int requestedSize)
+    public async Task<RouterDbPool> EnsurePoolAsync(int requestedSize)
     {
         if (_pool != null && _pool.Size >= requestedSize)
             return _pool;
 
         if (_pool != null && _pool.CheckedOutCount > 0)
         {
-            // Cannot dispose pool while instances are in use — reuse existing
             _logger?.LogWarning("[POOL] Cannot resize pool: {CheckedOut}/{Size} instances in use",
                 _pool.CheckedOutCount, _pool.Size);
             return _pool;
@@ -126,7 +125,7 @@ public class RoutingService
             throw new InvalidOperationException($"Cache file missing: {_cachedCachePath} — reload the map");
 
         _pool = new RouterDbPool(_cachedCachePath, requestedSize);
-        _pool.WarmUpAsync(msg => StatusChanged?.Invoke(msg)).GetAwaiter().GetResult();
+        await _pool.WarmUpAsync(msg => StatusChanged?.Invoke(msg));
         return _pool;
     }
 
@@ -243,11 +242,6 @@ public class RoutingService
         _avoidHighwaysCached = false;
         TouchIdleTimer();
         StartHeartbeatMonitor();
-    }
-
-    public void DetachStatusHandler()
-    {
-        _mapRepository.StatusChanged -= _statusForwarder;
     }
 
     public void ClearMaps()
@@ -385,7 +379,7 @@ public class RoutingService
         TouchIdleTimer();
         try
         {
-            var pool = EnsurePool(candidateCount);
+            var pool = await EnsurePoolAsync(candidateCount);
             return await Task.Run(() =>
                 GenerateLoopRouteCandidates(request, pool, candidateCount, options, cancellationToken, progress),
                 cancellationToken);
@@ -1062,7 +1056,6 @@ public class RoutingService
             WaypointRejectionReasons = ctx.WaypointRejectionReasons,
             QualityScore = stats.QualityScore,
             NearMissCount = r.CountNearMisses(),
-            PrivateRoadDetectedCount = r.CountPrivateRoads(),
             OvershootRatio = Math.Round(stats.TotalDistanceKm / Math.Max(d.TargetDist, 0.1), 2),
             FindMotorwayMs = eb.FindMotorwayMs,
             CalculateStatsMs = d.StatsElapsedMs,
@@ -1229,13 +1222,5 @@ public class RoutingService
             TurnaroundDensityCheckMs = ctx.TurnaroundDensityCheckMs,
             TurnaroundDensityCheckCalls = ctx.TurnaroundDensityCheckCalls,
         };
-    }
-
-    /// <summary>
-    /// Temporary diagnostic: verify edge walk IDs actually block motorways.
-    /// </summary>
-    public Dictionary<string, object> ProbeMotorwayEdgeWalk()
-    {
-        return _edgeBlocker.ProbeEdgeWalkSafety(msg => StatusChanged?.Invoke(msg));
     }
 }

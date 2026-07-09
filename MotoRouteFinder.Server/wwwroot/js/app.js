@@ -1,3 +1,6 @@
+const POLL_INTERVAL_MS = 500;
+const HEARTBEAT_MS = 30000;
+
 const MotoApp = {
     points: [],
     currentRoute: null,
@@ -16,9 +19,11 @@ const MotoApp = {
             const text = await res.text();
             let detail = text;
             try { const json = JSON.parse(text); detail = json.details || json.detail || json.error || text; } catch { }
-            throw new Error(`HTTP ${res.status}: ${detail}`);
+            throw new Error(`HTTP ${res.status}: ${detail || res.statusText}`);
         }
-        return await res.json();
+        const text = await res.text();
+        if (!text) return {};
+        return JSON.parse(text);
     },
 
     async pollJobUntilDone(jobId, signal) {
@@ -32,7 +37,7 @@ const MotoApp = {
             if (job.status === 'completed') return job.result;
             if (job.status === 'failed') throw new Error(job.error || 'Generation failed');
             if (job.status === 'cancelled') throw new DOMException('Cancelled', 'AbortError');
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
         }
     },
 
@@ -65,9 +70,22 @@ const MotoApp = {
         this.updateTestFileCount();
         this.loadSavedMaps();
         this.startHeartbeat();
+        this.checkDebugEndpoints();
         window.addEventListener('beforeunload', () => {
             this.stopHeartbeat();
         });
+    },
+
+    async checkDebugEndpoints() {
+        try {
+            const res = await fetch('/api/route/health');
+            if (res.ok) {
+                const data = await res.json();
+                if (!data.debugEndpointsEnabled) {
+                    document.getElementById('modeToggle').style.display = 'none';
+                }
+            }
+        } catch { }
     },
 
     savePreferences() {
@@ -301,7 +319,7 @@ const MotoApp = {
         const repRatio = stats.repetitionRatio;
         const repEl = document.getElementById('statRepetition');
         repEl.textContent = (repRatio * 100).toFixed(1) + '%';
-        repEl.style.color = repRatio < 0.10 ? '#22c55e' : repRatio < 0.25 ? '#f97316' : '#ef4444';
+        repEl.style.color = this.repetitionColor(repRatio);
 
         const roadTypesSection = document.getElementById('roadTypesSection');
         const roadTypesList = document.getElementById('roadTypesList');
@@ -309,7 +327,7 @@ const MotoApp = {
             roadTypesSection.style.display = '';
             roadTypesList.innerHTML = Object.entries(stats.roadTypes)
                 .map(([name, km]) => `<div class="road-type-item">
-                    <span class="name">${name}</span>
+                    <span class="name">${this.escapeHtml(name)}</span>
                     <span class="km">${km.toFixed(1)} km</span>
                 </div>`).join('');
         } else {
@@ -383,6 +401,8 @@ const MotoApp = {
         const files = e.target.files;
         if (!files || files.length === 0) return;
 
+        const btn = document.getElementById('btnLoadMap');
+        btn.disabled = true;
         this.setStatus('Uploading and loading map...');
         const formData = new FormData();
         for (const file of files) {
@@ -402,6 +422,8 @@ const MotoApp = {
             this.loadSavedMaps();
         } catch (err) {
             this.setStatus(`Error: ${err.message}`);
+        } finally {
+            btn.disabled = false;
         }
 
         e.target.value = '';
@@ -472,6 +494,8 @@ const MotoApp = {
         if (!this.browseSelectedFile) return;
 
         const filePath = this.browseSelectedFile;
+        const btn = document.getElementById('btnLoadSelected');
+        btn.disabled = true;
         this.closeBrowse();
         this.setStatus(`Loading map: ${filePath}...`);
 
@@ -488,6 +512,8 @@ const MotoApp = {
             this.loadSavedMaps();
         } catch (err) {
             this.setStatus(`Error: ${err.message}`);
+        } finally {
+            btn.disabled = false;
         }
         this.updateButtons();
     },
@@ -495,10 +521,15 @@ const MotoApp = {
     async loadSavedMaps() {
         try {
             const res = await fetch('/api/route/maps/saved');
+            if (!res.ok) {
+                this.renderSavedMaps([]);
+                return;
+            }
             const maps = await res.json();
             this.renderSavedMaps(maps);
         } catch (err) {
             console.error('Failed to load saved maps:', err);
+            this.renderSavedMaps([]);
         }
     },
 
@@ -552,9 +583,13 @@ const MotoApp = {
 
     async removeSavedMap(path) {
         try {
-            await fetch(`/api/route/maps/saved?path=${encodeURIComponent(path)}`, {
+            const res = await fetch(`/api/route/maps/saved?path=${encodeURIComponent(path)}`, {
                 method: 'DELETE'
             });
+            if (!res.ok) {
+                this.setStatus('Failed to remove saved map');
+                return;
+            }
             this.loadSavedMaps();
         } catch (err) {
             this.setStatus(`Error: ${err.message}`);
@@ -565,7 +600,7 @@ const MotoApp = {
         this.stopHeartbeat();
         this.heartbeatInterval = setInterval(() => {
             fetch('/api/route/heartbeat').catch(() => {});
-        }, 30000);
+        }, HEARTBEAT_MS);
     },
 
     stopHeartbeat() {
@@ -576,23 +611,27 @@ const MotoApp = {
     },
 
     escapeHtml(str) {
-        return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     },
 
     escapeAttr(str) {
-        return str.replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        return String(str ?? '').replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     },
 
     // L8: JS-safe escape for inline onclick handlers (HTML entities get decoded before JS parsing)
     escapeJs(str) {
-        return str.replace(/\\/g, '\\\\').replace(/'/g, '\\x27').replace(/"/g, '\\x22');
+        return String(str ?? '').replace(/\\/g, '\\\\').replace(/'/g, '\\x27').replace(/"/g, '\\x22');
+    },
+
+    repetitionColor(ratio) {
+        return ratio < 0.10 ? '#22c55e' : ratio < 0.25 ? '#f97316' : '#ef4444';
     },
 
     showLoadedMaps(maps) {
         const section = document.getElementById('loadedMapsSection');
         const list = document.getElementById('loadedMapsList');
         section.style.display = '';
-        list.innerHTML = maps.map(m => `<div style="font-size:12px;padding:2px 0;color:#fff">${m}</div>`).join('');
+        list.innerHTML = maps.map(m => `<div style="font-size:12px;padding:2px 0;color:#fff">${this.escapeHtml(m)}</div>`).join('');
     },
 
     buildRouteRequest() {
@@ -713,12 +752,12 @@ const MotoApp = {
             this.currentJobId = null;
 
             let html = `<div class="test-summary">Test complete: ${data.totalRoutes} routes x ${data.candidatesPerRoute} candidates = ${data.totalFiles} files | Avg quality: ${data.avgQuality}</div>`;
-            html += `<div class="test-summary">Saved to: ${data.testRunDir}</div>`;
+            html += `<div class="test-summary">Saved to: ${this.escapeHtml(data.testRunDir)}</div>`;
 
             if (data.routes && data.routes.length > 0) {
                 html += `<table class="test-results-table"><thead><tr><th>#</th><th>Quality</th><th>Distance</th><th>Repetition</th><th>Direction</th></tr></thead><tbody>`;
                 for (const r of data.routes) {
-                    const repColor = r.repetitionPct < 10 ? '#22c55e' : r.repetitionPct < 25 ? '#f97316' : '#ef4444';
+                    const repColor = this.repetitionColor(r.repetitionPct / 100);
                     html += `<tr><td>${r.index}</td><td>${r.qualityScore}</td><td>${r.distanceKm} km</td><td style="color:${repColor}">${r.repetitionPct}%</td><td>${r.direction}</td></tr>`;
                 }
                 html += `</tbody></table>`;
@@ -761,6 +800,8 @@ const MotoApp = {
             return;
         }
 
+        const btn = document.getElementById('btnGoogleMaps');
+        btn.disabled = true;
         try {
             const data = await this.apiFetch('/api/route/export/google-maps', {
                 method: 'POST',
@@ -774,6 +815,8 @@ const MotoApp = {
             window.open(data.url, '_blank');
         } catch (err) {
             this.setStatus(`Export error: ${err.message}`);
+        } finally {
+            btn.disabled = false;
         }
     },
 
@@ -783,6 +826,8 @@ const MotoApp = {
             return;
         }
 
+        const btn = document.getElementById('btnDownloadGpx');
+        btn.disabled = true;
         try {
             const res = await fetch('/api/route/export/gpx/download', {
                 method: 'POST',
@@ -809,6 +854,8 @@ const MotoApp = {
             URL.revokeObjectURL(url);
         } catch (err) {
             this.setStatus(`GPX error: ${err.message}`);
+        } finally {
+            btn.disabled = false;
         }
     }
 };

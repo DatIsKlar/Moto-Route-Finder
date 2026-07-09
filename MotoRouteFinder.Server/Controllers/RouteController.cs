@@ -144,7 +144,8 @@ public class RouteController : ControllerBase
             status = "healthy",
             mapLoaded = _routingService.IsLoaded,
             memoryMb = Math.Round(GC.GetTotalMemory(false) / BytesToMB, 1),
-            uptime = TimeSpan.FromMilliseconds(Environment.TickCount64).ToString(@"hh\:mm\:ss")
+            uptime = TimeSpan.FromMilliseconds(Environment.TickCount64).ToString(@"hh\:mm\:ss"),
+            debugEndpointsEnabled = IsDebugEndpointsEnabled()
         });
     }
 
@@ -164,6 +165,13 @@ public class RouteController : ControllerBase
 
         if (request.Paths.Length == 1)
             return await LoadMapByPath(request.Paths[0], request.AvoidHighways);
+
+        // Validate extensions for multi-path loading
+        foreach (var path in request.Paths)
+        {
+            if (!IsMapExtension(path))
+                return ErrorResponse($"Invalid file: {path} (must be .osm, .pbf, or .routerdb)");
+        }
 
         try
         {
@@ -317,13 +325,6 @@ public class RouteController : ControllerBase
         }
     }
 
-    [HttpPost("maps/clear")]
-    public IActionResult ClearMaps()
-    {
-        _routingService.ClearMaps();
-        return Ok(new { status = "cleared" });
-    }
-
     // --- Saved Maps persistence ---
 
     [HttpGet("maps/saved")]
@@ -406,10 +407,15 @@ public class RouteController : ControllerBase
         {
             return Ok(new { status = "cancelled" });
         }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Validation failed");
+            return ErrorResponse(ex.Message);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to generate route");
-            return ErrorResponse(ex.Message);
+            return StatusCode(500, new { error = "Internal error" });
         }
     }
 
@@ -443,16 +449,24 @@ public class RouteController : ControllerBase
         {
             return Ok(new { status = "cancelled" });
         }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Validation failed");
+            return ErrorResponse(ex.Message);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to generate route candidates");
-            return ErrorResponse(ex.Message);
+            return StatusCode(500, new { error = "Internal error" });
         }
     }
 
     [HttpPost("routes/generate-candidates/start")]
     public IActionResult StartGenerateCandidates([FromBody] GenerateCandidatesRequest request)
     {
+        if (!ModelState.IsValid)
+            return BadRequest(ModelState);
+
         try
         {
             request.CandidateCount = Math.Clamp(request.CandidateCount, 1, 8);
@@ -759,10 +773,15 @@ public class RouteController : ControllerBase
             var gpx = GenerateGpxContent(request);
             return Ok(new { gpx });
         }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Validation failed");
+            return ErrorResponse(ex.Message);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to generate GPX");
-            return ErrorResponse(ex.Message);
+            return StatusCode(500, new { error = "Internal error" });
         }
     }
 
@@ -779,10 +798,15 @@ public class RouteController : ControllerBase
             var bytes = System.Text.Encoding.UTF8.GetBytes(gpx);
             return File(bytes, "application/gpx+xml", filename);
         }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Validation failed");
+            return ErrorResponse(ex.Message);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to generate GPX download");
-            return ErrorResponse(ex.Message);
+            return StatusCode(500, new { error = "Internal error" });
         }
     }
 
@@ -800,10 +824,15 @@ public class RouteController : ControllerBase
 
             return Ok(new { url });
         }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Validation failed");
+            return ErrorResponse(ex.Message);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to generate Google Maps URL");
-            return ErrorResponse(ex.Message);
+            return StatusCode(500, new { error = "Internal error" });
         }
     }
 
@@ -930,33 +959,15 @@ public class RouteController : ControllerBase
         {
             return Ok(new { status = "cancelled" });
         }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Validation failed");
+            return ErrorResponse(ex.Message);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to run test");
-            return ErrorResponse(ex.Message);
-        }
-    }
-
-    // TEMPORARY: Step 3 probe — verify edge walk IDs block motorways correctly.
-    // Remove after verification is complete.
-    [HttpPost("probe-edge-walk")]
-    public IActionResult ProbeEdgeWalk()
-    {
-        if (!IsDebugEndpointsEnabled())
-            return NotFound();
-
-        if (!_routingService.IsLoaded)
-            return ErrorResponse("No map loaded", status: 400);
-
-        try
-        {
-            var result = _routingService.ProbeMotorwayEdgeWalk();
-            return Ok(result);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Edge walk probe failed");
-            return ErrorResponse(ex.Message);
+            return StatusCode(500, new { error = "Internal error" });
         }
     }
 }

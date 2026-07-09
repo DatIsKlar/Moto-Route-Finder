@@ -33,9 +33,26 @@ public class JobProgressStore
 
     public string CreateJob()
     {
+        SweepExpiredJobs();
         var job = new JobProgress { JobId = Guid.NewGuid().ToString("N") };
         _jobs[job.JobId] = job;
         return job.JobId;
+    }
+
+    private void SweepExpiredJobs()
+    {
+        var now = DateTime.UtcNow;
+        foreach (var kvp in _jobs)
+        {
+            if (kvp.Value.Status is JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled)
+            {
+                if ((now - kvp.Value.LastUpdated).TotalMinutes > EvictionAgeMinutes)
+                {
+                    if (_jobs.TryRemove(kvp.Key, out var expired))
+                        expired.Cts.Dispose();
+                }
+            }
+        }
     }
 
     public void UpdateProgress(string jobId, double fraction, string? message)

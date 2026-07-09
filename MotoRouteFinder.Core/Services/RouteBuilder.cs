@@ -22,12 +22,13 @@ public class RouteBuilder
     private readonly DiagnosticsCollector _diagnostics;
     private readonly EdgeBlocker _edgeBlocker;
     private readonly RouteGenerationOptions _options;
+    private readonly AlternativePathFinder _alternativePathFinder;
 
     // Reusable buffers for per-segment edge tracking to avoid allocating
     // a new HashSet + List on every segment (~30x per route attempt).
     private readonly HashSet<RouteGeometryUtils.EdgeKey> _segmentEdgeBuffer = new();
     private readonly Dictionary<RouteGeometryUtils.EdgeKey, int> _overlapEdgeCounts = new();
-    private readonly RouteGeometryUtils.EdgeSpatialIndex _edgeSpatialIndex = new();
+    private readonly RouteGeometryUtils.EdgeSpatialIndex _edgeSpatialIndex;
 
     private const double HeadingAdjustmentAngle = 1.2566; // PI/2.5 = 72°
     private const double WaypointRadiusMinFraction = 0.5;
@@ -68,6 +69,7 @@ public class RouteBuilder
         RouteStatistics routeStatistics,
         DiagnosticsCollector diagnostics,
         EdgeBlocker edgeBlocker,
+        RouteGeometryUtils.EdgeSpatialIndex edgeSpatialIndex,
         IOptions<RouteGenerationOptions>? options = null)
     {
         _mapRepository = mapRepository;
@@ -77,7 +79,9 @@ public class RouteBuilder
         _routeStatistics = routeStatistics;
         _diagnostics = diagnostics;
         _edgeBlocker = edgeBlocker;
+        _edgeSpatialIndex = edgeSpatialIndex;
         _options = options?.Value ?? new RouteGenerationOptions();
+        _alternativePathFinder = new AlternativePathFinder(mapRepository, roadClassifier, edgeBlocker, options);
     }
 
     public (List<Coordinate> geometry, List<Coordinate> allPoints, BuildContext context)? BuildProgressiveLoop(
@@ -216,6 +220,7 @@ public class RouteBuilder
         var currentPos = _roadClassifier.TryResolveToRoadCounted(profile, start, 2000) ?? start;
         var allUsedEdges = new HashSet<RouteGeometryUtils.EdgeKey>();
         _edgeSpatialIndex.Clear();
+        _alternativePathFinder.ClearDensityCache();
 
         var allSegments = new List<List<Coordinate>>();
         var allPoints = new List<Coordinate> { start };
@@ -458,8 +463,8 @@ public class RouteBuilder
             // Edge density check: soft guidance instead of hard reject
             if (allUsedEdges.Count > 50)
             {
-                int edgeDensity = _edgeSpatialIndex.CountInRadius(candidate, 5000);
-                if (edgeDensity > 35)
+                int edgeDensity = _edgeSpatialIndex.CountInRadius(candidate, _options.EdgeDensityCheckRadiusM);
+                if (edgeDensity > _options.EdgeDensityThreshold)
                 {
                     // Try pushed version with larger radius
                     double pushedRadius = waypointRadius * 1.5;
@@ -704,7 +709,8 @@ public class RouteBuilder
             double homingDistKm = remainingReturnKm * hopRatio;
 
             // Add perpendicular offset to avoid overlapping with forward path
-            double perpOffset = _options.HomingPerpendicularOffsetM * Math.Sin(hi * Math.PI / Math.Max(homingCount, 1)); // 1.5km offset, alternating sides
+            // Alternates sides: positive on even hops, negative on odd hops
+            double perpOffset = (hi % 2 == 0 ? 1 : -1) * _options.HomingPerpendicularOffsetM;
             // M1: perpendicular to bearing-to-start, in math angle radians
             double perpAngle = RouteGeometryUtils.BearingToMathAngle(bearingToStart) + Math.PI / 2;
 
@@ -803,7 +809,6 @@ public class RouteBuilder
         double returnOverlapBeforePush = 0;
         int returnPushAttemptsUsed = retPushUsed;
         if (retPushRerouted) ctx.TotalPushReroutesSucceeded++;
-        int returnRerouteCount = 0;
         if (returnSeg != null)
         {
             var forwardEdgeKeys = RouteGeometryUtils.BuildForwardEdgeKeySet(allSegments);
@@ -890,7 +895,6 @@ public class RouteBuilder
             ctx.ReturnOverlapBeforePush = returnOverlapBeforePush;
             ctx.ReturnOverlapAfterPush = returnOverlapPct;
             ctx.ActualReturnVsEstimate = lastEstReturnWithMultiplierKm > 0 ? returnDistanceKm / lastEstReturnWithMultiplierKm : 0;
-            ctx.ReturnSegmentRerouteCount = returnRerouteCount;
 
             // Return path sector coverage
             var returnBearings = new HashSet<int>();
@@ -943,9 +947,8 @@ public class RouteBuilder
     {
         var context = new BuildContext(start);
         context.BuilderMethod = "alternative_path";
-        var alternativePathFinder = new AlternativePathFinder(_mapRepository, _roadClassifier, _edgeBlocker, Options.Create(_options));
 
-        var result = alternativePathFinder.FindRoundTrip(profile, start, targetDistKm, avoidHighways, turnaroundRatio, direction, context, avoidBearing);
+        var result = _alternativePathFinder.FindRoundTrip(profile, start, targetDistKm, avoidHighways, turnaroundRatio, direction, context, avoidBearing);
         if (result == null)
         {
             return null;

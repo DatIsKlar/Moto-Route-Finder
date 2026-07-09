@@ -45,9 +45,17 @@ Standard navigation apps give you point-A-to-point-B routing. This tool generate
 git clone <your-repo-url>
 cd csharp-dotnet10-web
 
-# Edit docker-compose.yml to point volumes at your map files
+# Set MAPS_HOST_DIR to your map files location (absolute path recommended)
+# Option 1: Create a .env file next to docker-compose.yml
+echo "MAPS_HOST_DIR=/home/user/MotorTour/maps" > .env
+
+# Option 2: Export as environment variable
+export MAPS_HOST_DIR=/path/to/your/maps
+
 docker-compose up -d
 ```
+
+**Portainer users:** Set `MAPS_HOST_DIR` as a stack Environment variable in the Portainer UI with an **absolute** host path (e.g., `/home/user/MotorTour/maps`). The relative `./maps` fallback is not suitable for Portainer git stacks because Portainer clones the repo into its own data directory.
 
 Open `http://localhost:5000` in your browser.
 
@@ -113,7 +121,6 @@ All endpoints are under `/api/route/`.
 | `GET` | `/maps/saved` | List saved maps with existence and size info |
 | `DELETE` | `/maps/saved` | Remove a map from the saved list |
 | `POST` | `/maps/unload` | Unload all maps from memory |
-| `POST` | `/maps/clear` | Clear all loaded maps |
 
 ### Route Generation
 

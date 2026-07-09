@@ -26,7 +26,6 @@ public record DebugRouteSummary
 
     // New diagnostic aggregates
     public int NearMissCount { get; set; }
-    public int PrivateRoadDetectedCount { get; set; }
     public Dictionary<string, int> FixFailureByReasonCode { get; set; } = new();
     public double OvershootRatio { get; set; }
 

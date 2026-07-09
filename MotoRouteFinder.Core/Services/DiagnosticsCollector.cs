@@ -72,9 +72,6 @@ public class DiagnosticsCollector
     public int CountNearMisses() =>
         _output.StemEvents.Count(e => e.NearestNearMissM < 200 && e.NearestNearMissM > 0);
 
-    public int CountPrivateRoads() =>
-        0;
-
     public int SumResolveCount() =>
         _output.RouteSummaries.Sum(s => s.ResolveCount);
 

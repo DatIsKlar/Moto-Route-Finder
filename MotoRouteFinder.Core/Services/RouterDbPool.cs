@@ -110,15 +110,16 @@ public class RouterDbPool : IDisposable
     public void Checkin(MapRepository repo)
     {
         if (repo == null) return;
-        var newCount = Interlocked.Decrement(ref _checkedOut);
         if (_disposed)
         {
+            Interlocked.Decrement(ref _checkedOut);
             repo.ClearMaps();
         }
         else
         {
             _pool.Enqueue(repo);
             _semaphore.Release();
+            Interlocked.Decrement(ref _checkedOut);
         }
     }
 
@@ -152,6 +153,6 @@ public class RouterDbPool : IDisposable
             count++;
         }
         _semaphore.Dispose();
-        Console.WriteLine($"[MEM] RouterDbPool.Dispose: cleared {count} MapRepository instances (pool size was {_size}, checked out was {_checkedOut})");
+        System.Diagnostics.Debug.WriteLine($"[MEM] RouterDbPool.Dispose: cleared {count} MapRepository instances (pool size was {_size}, checked out was {_checkedOut})");
     }
 }

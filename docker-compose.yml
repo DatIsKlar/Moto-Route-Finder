@@ -6,11 +6,12 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - /home/user/MotorTour/maps:/data/maps
+      - ${MAPS_HOST_DIR:-./maps}:/data/maps
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - MAPS_DIR=/data/maps
       - PORT=5000
+      - HOST=0.0.0.0
     logging:
       driver: json-file
       options:

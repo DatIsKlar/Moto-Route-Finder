@@ -101,17 +101,6 @@ public class ExportService
         return new XDeclaration("1.0", "utf-8", null) + gpx.ToString();
     }
 
-    public void SaveGpxFile(
-        string filePath,
-        List<Coordinate> routeGeometry,
-        Coordinate start,
-        List<Coordinate> waypoints,
-        string routeName = "Moto Route")
-    {
-        var gpxContent = GenerateGpx(routeGeometry, start, waypoints, routeName);
-        File.WriteAllText(filePath, gpxContent, Encoding.UTF8);
-    }
-
     public string GetGpxFilename(string routeName = "moto-route")
     {
         var safeName = new string(routeName

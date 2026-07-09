@@ -48,6 +48,11 @@ public class AlternativePathFinder
         _options = options?.Value ?? new RouteGenerationOptions();
     }
 
+    public void ClearDensityCache()
+    {
+        _densityCache?.Clear();
+    }
+
     /// <summary>
     /// Finds a round trip using a forward-then-alternative approach (inspired by GraphHopper).
     /// Generates 2 candidates with different seeds and picks the most circular one.
@@ -227,7 +232,7 @@ public class AlternativePathFinder
         int plateauCount = CountPlateaus(mergedGeometry, forwardEdgeSet);
 
         // Compute root cause and forward path context for diagnostics
-        double turnaroundAngle = RouteGeometryUtils.CalculateTurnaroundAngle(forwardPath);
+        double turnaroundAngle = RouteGeometryUtils.CalculateTurnaroundAngle(forwardPath, alternativeReturn);
         double forwardDetourRatio = forwardHaversine > 0 ? forwardActual / forwardHaversine : 1.0;
         int edgeDensity = CountEdgesNearPoint(turnaroundPoint, 2000);
         returnDiag.ForwardPathTurnaroundAngle = turnaroundAngle;
@@ -477,7 +482,7 @@ public class AlternativePathFinder
             try
             {
                 double deg = (i * 360.0 / bearingCount) + randomOffset;
-                double bearing = deg * Math.PI / 180;
+                double bearing = RouteGeometryUtils.BearingToMathAngle(deg);
 
                 // Add ±10% random distance variation
                 double distanceVariation = 1.0 + (Random.Shared.NextDouble() - 0.5) * _options.TurnaroundDistanceVariation; // 0.9 to 1.1
@@ -1012,8 +1017,9 @@ public class AlternativePathFinder
             var segment = _mapRepository.Router!.Calculate(profile, fromCoord, toCoord);
             return RouteGeometryUtils.ExtractCoordinates(segment);
         }
-        catch
+        catch (Exception ex)
         {
+            System.Diagnostics.Debug.WriteLine($"RouteSingleSegment failed: {ex.Message}");
             return null;
         }
     }
