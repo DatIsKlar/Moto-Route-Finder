@@ -29,7 +29,7 @@ Standard navigation apps give you point-A-to-point-B routing. This tool generate
 - **Web UI from any device** — works on desktop, tablet, and phone browsers
 - **Map caching** — first load processes the OSM file; subsequent loads use a fast binary cache
 - **Idle memory management** — automatically unloads map data after 2 minutes of inactivity, reloads on next request
-- **Test mode** — batch generate N routes with diagnostics, auto-cycling direction bias and random distances
+- **Test mode** — batch generate N routes with diagnostics, auto-cycling direction bias and random distances (debug-only; requires `ENABLE_DEBUG_ENDPOINTS=true`)
 - **Loading overlay** — spinner during generation/test with cancel support
 - **Estimated arrival time** — shown in stats panel alongside distance and duration
 - **Dark map tiles toggle** — switch to CartoDB Dark Matter theme
@@ -43,7 +43,7 @@ Standard navigation apps give you point-A-to-point-B routing. This tool generate
 
 ```bash
 git clone <your-repo-url>
-cd csharp-dotnet10-web
+cd Moto-Route-Finder
 
 # Set MAPS_HOST_DIR to your map files location (absolute path recommended)
 # Option 1: Create a .env file next to docker-compose.yml
@@ -56,6 +56,12 @@ docker-compose up -d
 ```
 
 **Portainer users:** Set `MAPS_HOST_DIR` as a stack Environment variable in the Portainer UI with an **absolute** host path (e.g., `/home/user/MotorTour/maps`). The relative `./maps` fallback is not suitable for Portainer git stacks because Portainer clones the repo into its own data directory.
+
+> **Important — file permissions:** the container runs as a **non-root user (uid 1001)**, so the maps host directory must be **owned by or writable by uid 1001**. If it isn't, maps will *load* (reads work) but any write — uploads, generated `.routerdb` caches, and `saved_maps.json` — fails and a successful load is reported as an error. Fix it on the host (or via a root Portainer console) with:
+> ```bash
+> sudo chown -R 1001:1001 /home/user/MotorTour/maps
+> ```
+> Note the `chown appuser:appgroup /data/maps` step in the Dockerfile only affects the image's own empty directory — a bind-mounted host folder keeps the host's ownership, so it must be set on the host.
 
 Open `http://localhost:5000` in your browser.
 
@@ -100,7 +106,7 @@ dotnet run --project MotoRouteFinder.Server
 │                                                      │
 │ ┌────▼─────┐                                         │
 │ │ Itinero   │  Graph routing on OSM data             │
-│ │ (v1.6.0)  │  Custom MotorcycleProfile.lua          │
+│ │1.6.0-p037 │  Custom MotorcycleProfile.lua          │
 │ └──────────┘                                         │
 └──────────────────────────────────────────────────────┘
 ```
@@ -115,19 +121,26 @@ All endpoints are under `/api/route/`.
 |--------|----------|-------------|
 | `GET` | `/maps/status` | Map loading status, loaded maps, memory usage |
 | `POST` | `/maps/upload` | Upload `.osm`/`.pbf`/`.routerdb` files (up to 1 GB) |
+| `POST` | `/maps/load` | Load one or more maps by path (JSON body) |
 | `POST` | `/maps/load-server` | Load a map from a server-side file path |
 | `GET` | `/maps/browse` | Browse server directories for map files |
-| `POST` | `/maps/saved/load` | Load a map from the saved maps list |
 | `GET` | `/maps/saved` | List saved maps with existence and size info |
+| `POST` | `/maps/saved` | Add a map to the saved list |
+| `POST` | `/maps/saved/load` | Load a map from the saved maps list |
 | `DELETE` | `/maps/saved` | Remove a map from the saved list |
 | `POST` | `/maps/unload` | Unload all maps from memory |
 
 ### Route Generation
 
+The async job API (`.../start` + `status` polling) is the primary path used by the web UI; the synchronous variants run the full generation on the request thread and are kept for direct/scripted use.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/routes/generate` | Generate a single loop route |
-| `POST` | `/routes/generate-candidates` | Generate N candidates in parallel, return best + all |
+| `POST` | `/routes/generate` | Generate a single loop route (synchronous) |
+| `POST` | `/routes/generate-candidates` | Generate N candidates in parallel, return best + all (synchronous) |
+| `POST` | `/routes/generate-candidates/start` | Start async candidate generation, returns a `jobId` |
+| `GET` | `/routes/status/{jobId}` | Poll job progress/result |
+| `POST` | `/routes/cancel/{jobId}` | Cancel a running job |
 
 ### Export
 
@@ -137,11 +150,14 @@ All endpoints are under `/api/route/`.
 | `POST` | `/export/gpx/download` | Download GPX file |
 | `POST` | `/export/google-maps` | Generate Google Maps URL |
 
-### Test
+### Test (debug-only)
+
+These require `ENABLE_DEBUG_ENDPOINTS=true`; otherwise they return `404`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/routes/test-run` | Batch test: generate N routes, save diagnostics, return summary |
+| `POST` | `/routes/test-run` | Batch test: generate N routes, save diagnostics, return summary (synchronous) |
+| `POST` | `/routes/test-run/start` | Start async batch test, returns a `jobId` (poll via `/routes/status/{jobId}`) |
 
 ### System
 
@@ -178,7 +194,7 @@ When generating multiple candidates, the system uses a `RouterDbPool` — pre-lo
 ## Project Structure
 
 ```
-csharp-dotnet10-web/
+Moto-Route-Finder/
 ├── Dockerfile                    # Multi-stage Docker build
 ├── docker-compose.yml            # Docker deployment config
 ├── MotoRouteFinder.Web.sln       # Solution file
@@ -196,7 +212,6 @@ csharp-dotnet10-web/
 │   │   ├── DebugStemEvent.cs     # Detailed diagnostic records
 │   │   ├── DiagnosticsOutput.cs  # Diagnostic data model
 │   │   ├── BuildContext.cs       # Shared state for route construction
-│   │   ├── MapPoint.cs           # Map point model
 │   │   └── ...
 │   ├── Resources/
 │   │   └── MotorcycleProfile.lua # Itinero routing profile
@@ -244,6 +259,7 @@ The `RouteGeneration` section contains every tunable parameter with inline docum
 | `HOST` | `127.0.0.1` | HTTP listen address (set to `0.0.0.0` to expose on all interfaces) |
 | `MAPS_DIR` | `/data/maps` | Directory for map files and cache |
 | `ASPNETCORE_ENVIRONMENT` | `Production` | .NET environment |
+| `ENABLE_DEBUG_ENDPOINTS` | `false` | Enables the debug-only test endpoints and Test mode UI |
 
 ### Docker Volumes
 
