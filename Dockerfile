@@ -1,5 +1,5 @@
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:10.0-preview AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY MotoRouteFinder.Core/ MotoRouteFinder.Core/
 COPY MotoRouteFinder.Server/ MotoRouteFinder.Server/
@@ -7,12 +7,12 @@ COPY MotoRouteFinder.Web.sln .
 RUN dotnet publish MotoRouteFinder.Server/MotoRouteFinder.Server.csproj -c Release -o /app/publish
 
 # Runtime stage
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-preview
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build /app/publish .
 
-RUN addgroup --system --gid 1001 appgroup && \
-    adduser --system --uid 1001 --ingroup appgroup appuser
+RUN groupadd --system --gid 1001 appgroup && \
+    useradd --system --uid 1001 --gid appgroup appuser
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
